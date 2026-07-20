@@ -17,7 +17,9 @@ target_time > validation_end                  -> test
 ## 2. 处理流程
 
 ```text
-events.csv + pois.csv
+TSMC 格式签到文件（可选）
+  -> convert_tsmc2014.py
+  -> events.csv + pois.csv
   -> prepare_realworld_data.py
   -> 时间切分、历史序列、匿名 ID 映射
   -> build_tap_sid.py
@@ -32,4 +34,3 @@ events.csv + pois.csv
 
 TAP-SID 只使用 POI 坐标和类别构造，不使用测试期交互统计。评估阶段使用目录 Trie，
 保证完整输出对应真实 POI。
-

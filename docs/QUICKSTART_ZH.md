@@ -1,6 +1,6 @@
 # TAP-SID 快速运行指南
 
-本文档说明如何从两张原始 CSV 表完成数据准备、训练和测试。
+本文档说明如何从一张 TSMC2014 格式的签到文件，或两张通用 CSV 表，完成数据准备、训练和测试。
 
 ## 1. 获取代码与安装环境
 
@@ -14,6 +14,18 @@ export PYTHONPATH=$PWD
 准备一个可被 Hugging Face Transformers 读取的基础模型目录。模型不需要放入本仓库。
 
 ## 2. 准备输入数据
+
+### 2.1 单个签到文件（推荐）
+
+将八列制表符分隔文件放入：
+
+```text
+data/raw/checkins.txt
+```
+
+八列依次为：用户 ID、POI ID、细类别 ID、细类别名称、纬度、经度、时区分钟偏移和 UTC 签到时间。程序会自动生成 `events.csv` 与 `pois.csv`，并通过固定 Foursquare taxonomy 从细类别构造粗类别。
+
+### 2.2 两张 CSV（兼容模式）
 
 将数据放入以下位置：
 
@@ -46,9 +58,33 @@ p_12,31.2304,121.4737,Food,Coffee
 cp configs/example.env configs/local.env
 ```
 
-编辑 `configs/local.env`：
+编辑 `configs/local.env`。使用单文件输入时配置为：
 
 ```bash
+TSMC_FILE=./data/raw/checkins.txt
+TSMC_ENCODING=latin-1
+TSMC_CATEGORY_L1_MAP=./configs/foursquare_category_l1_map.json
+
+PROCESSED_ROOT=./data/processed/example
+RUN_ROOT=./outputs/example
+
+TRAIN_END=2024-10-31T23:59:59Z
+VALIDATION_END=2024-11-30T23:59:59Z
+DEFAULT_TIMEZONE_OFFSET_MINUTES=480
+
+BASE_MODEL=/path/to/Meta-Llama-3-8B-Instruct
+
+N_COARSE_REGIONS=64
+N_FINE_REGIONS=256
+
+NPROC_PER_NODE=1
+DEVICE=cuda:0
+```
+
+使用双表输入时令 `TSMC_FILE` 为空，并配置：
+
+```bash
+TSMC_FILE=
 EVENTS=./data/raw/events.csv
 POIS=./data/raw/pois.csv
 
@@ -98,6 +134,10 @@ bash scripts/prepare_data.sh
 
 ```text
 data/processed/example/
+  converted_raw/                 # 仅单文件输入产生
+    events.csv
+    pois.csv
+    conversion_report.json
   poi_info.csv
   role_priors.csv
   v1_sequence/
@@ -111,7 +151,7 @@ outputs/example/
   data/llm_test.json
 ```
 
-首先检查 `protocol_report.json`，确认 train、validation 和 test 均包含有效样本，再开始训练。
+首先检查 `protocol_report.json`，确认 train、validation 和 test 均包含有效样本，再开始训练。若使用单文件输入，还应检查 `converted_raw/conversion_report.json` 中的丢弃行数和未映射类别数。
 
 ## 5. 训练
 

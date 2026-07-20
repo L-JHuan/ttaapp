@@ -11,7 +11,20 @@ export PYTHONPATH=$PWD
 
 ## 2. Prepare data
 
-Place the two input files at:
+The preferred input is one TSMC2014-compatible, headerless, eight-column TSV:
+
+```text
+user_id, POI_id, category_id, category_name,
+latitude, longitude, timezone_offset_minutes, UTC_time
+```
+
+Place it at `data/raw/checkins.txt` and set `TSMC_FILE` in `local.env`. The
+pipeline derives `events.csv` and `pois.csv`, and maps the fine category name to
+a coarse category using the bundled Foursquare taxonomy.
+For a non-Foursquare catalog, set `TSMC_CATEGORY_L1_MAP` to a JSON dictionary
+that maps each fine-category name to a coarse-category name.
+
+Alternatively, leave `TSMC_FILE` empty and place the two input files at:
 
 ```text
 data/raw/events.csv
@@ -29,7 +42,7 @@ Required columns:
 cp configs/example.env configs/local.env
 ```
 
-Edit `configs/local.env` to set the input paths, chronological split cutoffs,
+Edit `configs/local.env` to set `TSMC_FILE` or the two-table input paths, chronological split cutoffs,
 base-model path, and output directories. Then load it:
 
 ```bash

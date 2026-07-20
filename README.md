@@ -7,6 +7,7 @@ generative next-POI recommendation.
 
 ```text
 tap_sid/
+  convert_tsmc2014.py        # raw eight-column TSV -> event/POI tables
   prepare_realworld_data.py  # raw CSV -> chronological samples
   build_tap_sid.py           # POI metadata -> TAP-SID codebook
   build_llm_data.py          # POI sequences -> SFT JSON
@@ -19,6 +20,7 @@ scripts/
   evaluate.sh
 configs/
   example.env
+  foursquare_category_l1_map.json
 docs/
   QUICKSTART.md
   QUICKSTART_ZH.md
@@ -28,7 +30,13 @@ docs/
 
 ## Input
 
-Two files are required:
+The simplest input is one TSMC2014-compatible eight-column TSV file containing
+user ID, POI ID, category ID/name, coordinates, timezone offset, and UTC time.
+Set `TSMC_FILE` in the configuration and the pipeline will generate the event
+and POI tables automatically. A fixed Foursquare taxonomy maps fine categories
+to coarse categories.
+
+The existing two-table input remains available when `TSMC_FILE` is empty:
 
 - `events.csv`: `user_id`, `poi_id`, `timestamp`;
 - `pois.csv`: `poi_id`, `latitude`, `longitude`, `category_l1`, `category_l2`.
