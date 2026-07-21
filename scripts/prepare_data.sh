@@ -14,7 +14,19 @@ SID_CSV="$RUN_ROOT/codebook/tap_sid.csv"
 
 mkdir -p "$RUN_ROOT/codebook" "$RUN_ROOT/data"
 
-if [[ -n "${TSMC_FILE:-}" ]]; then
+if [[ -n "${INDUSTRIAL_JSONL:-}" ]]; then
+  INDUSTRIAL_TIMEZONE_OFFSET_MINUTES=${INDUSTRIAL_TIMEZONE_OFFSET_MINUTES:-480}
+  CONVERTED_DIR="$PROCESSED_ROOT/converted_raw"
+  EVENTS="$CONVERTED_DIR/events.csv"
+  POIS="$CONVERTED_DIR/pois.csv"
+  mkdir -p "$CONVERTED_DIR"
+  python -m tap_sid.convert_industrial_jsonl \
+    --input "$INDUSTRIAL_JSONL" \
+    --events_output "$EVENTS" \
+    --pois_output "$POIS" \
+    --report_output "$CONVERTED_DIR/conversion_report.json" \
+    --timezone_offset_minutes "$INDUSTRIAL_TIMEZONE_OFFSET_MINUTES"
+elif [[ -n "${TSMC_FILE:-}" ]]; then
   TSMC_ENCODING=${TSMC_ENCODING:-latin-1}
   TSMC_CATEGORY_L1_MAP=${TSMC_CATEGORY_L1_MAP:-$REPO_ROOT/configs/foursquare_category_l1_map.json}
   CONVERTED_DIR="$PROCESSED_ROOT/converted_raw"
@@ -29,8 +41,8 @@ if [[ -n "${TSMC_FILE:-}" ]]; then
     --category_l1_map "$TSMC_CATEGORY_L1_MAP" \
     --encoding "$TSMC_ENCODING"
 else
-  : "${EVENTS:?Set EVENTS, or set TSMC_FILE}"
-  : "${POIS:?Set POIS, or set TSMC_FILE}"
+  : "${EVENTS:?Set EVENTS, or set INDUSTRIAL_JSONL/TSMC_FILE}"
+  : "${POIS:?Set POIS, or set INDUSTRIAL_JSONL/TSMC_FILE}"
 fi
 
 python -m tap_sid.prepare_realworld_data \
