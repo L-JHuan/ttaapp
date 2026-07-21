@@ -13,6 +13,7 @@ N_FINE_REGIONS=${N_FINE_REGIONS:-256}
 SID_CSV="$RUN_ROOT/codebook/tap_sid.csv"
 
 mkdir -p "$RUN_ROOT/codebook" "$RUN_ROOT/data"
+PREPARE_EXTRA_ARGS=()
 
 if [[ -n "${INDUSTRIAL_JSONL:-}" ]]; then
   INDUSTRIAL_TIMEZONE_OFFSET_MINUTES=${INDUSTRIAL_TIMEZONE_OFFSET_MINUTES:-480}
@@ -26,6 +27,7 @@ if [[ -n "${INDUSTRIAL_JSONL:-}" ]]; then
     --pois_output "$POIS" \
     --report_output "$CONVERTED_DIR/conversion_report.json" \
     --timezone_offset_minutes "$INDUSTRIAL_TIMEZONE_OFFSET_MINUTES"
+  PREPARE_EXTRA_ARGS+=(--collapse_consecutive_same_poi)
 elif [[ -n "${TSMC_FILE:-}" ]]; then
   TSMC_ENCODING=${TSMC_ENCODING:-latin-1}
   TSMC_CATEGORY_L1_MAP=${TSMC_CATEGORY_L1_MAP:-$REPO_ROOT/configs/foursquare_category_l1_map.json}
@@ -53,7 +55,8 @@ python -m tap_sid.prepare_realworld_data \
   --validation_end "$VALIDATION_END" \
   --default_timezone_offset_minutes "$DEFAULT_TIMEZONE_OFFSET_MINUTES" \
   --max_sequence_length 50 \
-  --catalog_scope train_seen
+  --catalog_scope train_seen \
+  "${PREPARE_EXTRA_ARGS[@]}"
 
 python -m tap_sid.build_tap_sid \
   --poi_info "$PROCESSED_ROOT/poi_info.csv" \

@@ -30,6 +30,11 @@ docs/
 
 ## Input
 
+For industrial behavior logs, set `INDUSTRIAL_JSONL` to a JSONL file containing
+`user_id`, `poiid`, `new_key_type`, `longitude`, `latitude`, and `log_time`.
+Consecutive reports from the same user at the same POI are treated as one
+observed location state before next-POI samples are constructed.
+
 The simplest input is one TSMC2014-compatible eight-column TSV file containing
 user ID, POI ID, category ID/name, coordinates, timezone offset, and UTC time.
 Set `TSMC_FILE` in the configuration and the pipeline will generate the event

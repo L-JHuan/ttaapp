@@ -15,7 +15,18 @@ export PYTHONPATH=$PWD
 
 ## 2. 准备输入数据
 
-### 2.1 单个签到文件（推荐）
+### 2.1 工业 JSONL
+
+工业报活数据可直接提供每行一个 JSON 对象的文件，字段为：
+
+```text
+user_id, poiid, new_key_type, longitude, latitude, log_time
+```
+
+在配置中设置 `INDUSTRIAL_JSONL` 后，程序会生成标准事件表和 POI 表，并自动合并每位用户
+连续上报的相同 POI。合并后仍采用逐位置滚动预测，但目标变为下一个不同 POI。
+
+### 2.2 单个签到文件（推荐）
 
 将八列制表符分隔文件放入：
 
@@ -25,7 +36,7 @@ data/raw/checkins.txt
 
 八列依次为：用户 ID、POI ID、细类别 ID、细类别名称、纬度、经度、时区分钟偏移和 UTC 签到时间。程序会自动生成 `events.csv` 与 `pois.csv`，并通过固定 Foursquare taxonomy 从细类别构造粗类别。
 
-### 2.2 两张 CSV（兼容模式）
+### 2.3 两张 CSV（兼容模式）
 
 将数据放入以下位置：
 

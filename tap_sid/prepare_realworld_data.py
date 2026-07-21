@@ -25,6 +25,15 @@ def local_time_text(timestamp: pd.Timestamp, offset_minutes: int) -> str:
     return (timestamp + pd.Timedelta(minutes=offset_minutes)).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def collapse_consecutive_same_poi(events: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """合并每位用户连续上报的相同 POI，并保留该状态的首次上报。"""
+    ordered = events.sort_values(["_user", "_time", "_poi"], kind="stable").copy()
+    previous_poi = ordered.groupby("_user", sort=False)["_poi"].shift()
+    keep = previous_poi.isna() | ordered["_poi"].ne(previous_poi)
+    collapsed = ordered.loc[keep].copy()
+    return collapsed, len(ordered) - len(collapsed)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare chronological TAP-SID sequences from event logs.")
     parser.add_argument("--events", type=Path, required=True)
@@ -47,6 +56,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event_type", default="")
     parser.add_argument("--max_sequence_length", type=int, default=50)
     parser.add_argument("--min_history_length", type=int, default=1)
+    parser.add_argument(
+        "--collapse_consecutive_same_poi",
+        action="store_true",
+        help="Collapse consecutive reports at the same POI into one observed state.",
+    )
     parser.add_argument(
         "--catalog_scope",
         choices=["train_seen", "provided"],
@@ -133,6 +147,9 @@ def main() -> None:
     pois = pois[pois["_poi"].isin(catalog_pois)].copy()
     if not len(pois):
         raise ValueError("筛选后目录为空")
+    collapsed_consecutive_events = 0
+    if args.collapse_consecutive_same_poi:
+        events, collapsed_consecutive_events = collapse_consecutive_same_poi(events)
 
     user_map = stable_mapping(events["_user"])
     poi_map = stable_mapping(pois["_poi"])
@@ -219,6 +236,9 @@ def main() -> None:
         "max_sequence_length": args.max_sequence_length,
         "min_history_length": args.min_history_length,
         "deduplicated_events": deduplicated_events,
+        "collapse_consecutive_same_poi": args.collapse_consecutive_same_poi,
+        "collapsed_consecutive_events": collapsed_consecutive_events,
+        "events_after_catalog_and_state_filter": len(events),
         "users": len(user_map),
         "catalog_pois": len(poi_map),
         "categories_l1": len(l1_map),

@@ -5,6 +5,7 @@ data/raw/*
 data/processed/*
 outputs/*
 checkpoints/*
+reports/*
 *.log
 !data/raw/.gitkeep
 !data/processed/.gitkeep
