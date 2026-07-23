@@ -108,6 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split_dir", type=Path, required=True)
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--keep_last_k_train", type=int, default=5)
+    parser.add_argument("--no_validation", action="store_true")
     return parser.parse_args()
 
 
@@ -116,9 +117,10 @@ def main() -> None:
     pid_to_sid = load_pid_to_sid(args.sid_csv)
     jobs = [
         ("train", "train_poi_sequence.csv", "llm_train.json", args.keep_last_k_train),
-        ("validation", "validation_poi_sequence.csv", "llm_val.json", 0),
         ("test", "test_poi_sequence.csv", "llm_test.json", 0),
     ]
+    if not args.no_validation:
+        jobs.insert(1, ("validation", "validation_poi_sequence.csv", "llm_val.json", 0))
     report: dict[str, Any] = {"sid_csv": str(args.sid_csv), "splits": {}}
     for split, input_name, output_name, keep_last_k in jobs:
         stats = convert_split(

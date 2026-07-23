@@ -7,12 +7,16 @@ set -euo pipefail
 NPROC_PER_NODE=${NPROC_PER_NODE:-1}
 CHECKPOINT_DIR="$RUN_ROOT/checkpoint"
 mkdir -p "$CHECKPOINT_DIR"
+VALID_ARGS=()
+
+if [[ -f "$RUN_ROOT/data/llm_val.json" ]]; then
+  VALID_ARGS+=(--valid_dataset "$RUN_ROOT/data/llm_val.json")
+fi
 
 TQDM_MININTERVAL=60 TQDM_MINITERS=50 \
 torchrun --standalone --nproc_per_node="$NPROC_PER_NODE" -m tap_sid.train_tap_sid \
   --base_model "$BASE_MODEL" \
   --train_dataset "$RUN_ROOT/data/llm_train.json" \
-  --valid_dataset "$RUN_ROOT/data/llm_val.json" \
   --output_dir "$CHECKPOINT_DIR" \
   --batch_size 1 \
   --eval_batch_size 1 \
@@ -28,5 +32,5 @@ torchrun --standalone --nproc_per_node="$NPROC_PER_NODE" -m tap_sid.train_tap_si
   --lora_dropout 0.1 \
   --gradient_checkpointing \
   --seed 42 \
-  --logging_steps 50
-
+  --logging_steps 50 \
+  "${VALID_ARGS[@]}"

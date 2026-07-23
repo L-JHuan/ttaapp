@@ -11,6 +11,16 @@ export PYTHONPATH=$PWD
 
 ## 2. Prepare data
 
+For an industrial activity log, provide one JSON object per line with:
+
+```text
+user_id, poiid, new_key_type, longitude, latitude, log_time
+```
+
+Set `INDUSTRIAL_JSONL` to the file path. Consecutive reports from the same user
+at the same POI are collapsed into one observed state before rolling next-POI
+samples are constructed.
+
 The preferred input is one TSMC2014-compatible, headerless, eight-column TSV:
 
 ```text
@@ -42,6 +52,12 @@ Required columns:
 cp configs/example.env configs/local.env
 ```
 
+For industrial JSONL, use the dedicated template:
+
+```bash
+cp configs/industrial.example.env configs/local.env
+```
+
 Edit `configs/local.env` to set `TSMC_FILE` or the two-table input paths, chronological split cutoffs,
 base-model path, and output directories. Then load it:
 
@@ -58,6 +74,17 @@ target_time <= TRAIN_END                         -> train
 TRAIN_END < target_time <= VALIDATION_END       -> validation
 target_time > VALIDATION_END                    -> test
 ```
+
+For a train/test-only industrial run, set:
+
+```bash
+INDUSTRIAL_JSONL=./data/raw/output.jsonl
+TRAIN_END=2026-07-17T15:59:59Z
+VALIDATION_END=
+NO_VALIDATION=1
+```
+
+All targets after `TRAIN_END` are then assigned to the rolling test split.
 
 ## 4. Run
 

@@ -810,7 +810,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--init_adapter_dir", default="")
     parser.add_argument("--init_prefix_head_path", default="")
     parser.add_argument("--train_dataset", type=Path, required=True)
-    parser.add_argument("--valid_dataset", type=Path, required=True)
+    parser.add_argument("--valid_dataset", type=Path)
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--eval_batch_size", type=int, default=1)
@@ -853,6 +853,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def validate_dataset_paths(
+    train_dataset: Path,
+    valid_dataset: Path | None,
+    eval_during_train: bool,
+) -> None:
+    if not train_dataset.exists():
+        raise FileNotFoundError(train_dataset)
+    if valid_dataset is not None and not valid_dataset.exists():
+        raise FileNotFoundError(valid_dataset)
+    if eval_during_train and valid_dataset is None:
+        raise ValueError("--eval_during_train requires --valid_dataset")
+
+
 def validate_args(args: argparse.Namespace) -> None:
     positive_ints = ("batch_size", "eval_batch_size", "grad_accum", "num_train_epochs", "cutoff_len", "logging_steps")
     for name in positive_ints:
@@ -882,9 +895,7 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--sibling_min_support must be >= 0")
     if args.limit_train < 0 or args.limit_val < 0 or args.max_steps < 0:
         raise ValueError("--limit_train/--limit_val/--max_steps must be >= 0")
-    for path in (args.train_dataset, args.valid_dataset):
-        if not path.exists():
-            raise FileNotFoundError(path)
+    validate_dataset_paths(args.train_dataset, args.valid_dataset, args.eval_during_train)
     if args.output_dir.exists() and any(args.output_dir.iterdir()) and not args.overwrite:
         raise FileExistsError(f"{args.output_dir} already exists; pass --overwrite to reuse")
 
@@ -896,7 +907,7 @@ def main() -> None:
     device, rank, world_size, distributed = setup_device(args.dist_backend)
     try:
         train_rows = load_rows(args.train_dataset, args.limit_train)
-        valid_rows = load_rows(args.valid_dataset, args.limit_val)
+        valid_rows = load_rows(args.valid_dataset, args.limit_val) if args.valid_dataset is not None else []
         z1_label_to_id, z1_counts = build_z1_vocab(train_rows)
         z2_label_to_id, z2_counts = build_z2_vocab(train_rows)
         z12_label_to_id, z12_counts = build_z12_vocab(train_rows)
@@ -942,16 +953,20 @@ def main() -> None:
             args.cutoff_len,
             args.sibling_min_support,
         )
-        valid_dataset = PrefixAuxDataset(
-            valid_rows,
-            tokenizer,
-            z1_label_to_id,
-            z2_label_to_id,
-            z12_label_to_id,
-            z1_counts,
-            reliability,
-            args.cutoff_len,
-            args.sibling_min_support,
+        valid_dataset = (
+            PrefixAuxDataset(
+                valid_rows,
+                tokenizer,
+                z1_label_to_id,
+                z2_label_to_id,
+                z12_label_to_id,
+                z1_counts,
+                reliability,
+                args.cutoff_len,
+                args.sibling_min_support,
+            )
+            if valid_rows
+            else None
         )
         raw_weight_mean = reliability_summary(train_dataset.items, 1.0)["raw_weight_mean"]
         normalizer = raw_weight_mean if args.z1_reliability_normalize and raw_weight_mean > 0 else 1.0
@@ -977,7 +992,7 @@ def main() -> None:
                 seed=args.seed,
                 drop_last=False,
             )
-            if distributed
+            if distributed and valid_dataset is not None
             else None
         )
         train_loader = DataLoader(
@@ -988,13 +1003,17 @@ def main() -> None:
             collate_fn=collate,
             pin_memory=device.type == "cuda",
         )
-        valid_loader = DataLoader(
-            valid_dataset,
-            batch_size=args.eval_batch_size,
-            shuffle=False,
-            sampler=valid_sampler,
-            collate_fn=collate,
-            pin_memory=device.type == "cuda",
+        valid_loader = (
+            DataLoader(
+                valid_dataset,
+                batch_size=args.eval_batch_size,
+                shuffle=False,
+                sampler=valid_sampler,
+                collate_fn=collate,
+                pin_memory=device.type == "cuda",
+            )
+            if valid_dataset is not None
+            else None
         )
         if distributed:
             model = DistributedDataParallel(model, device_ids=[device.index], output_device=device.index)
@@ -1008,7 +1027,7 @@ def main() -> None:
                 json.dumps(
                     {
                         "train_samples": len(train_dataset),
-                        "valid_samples": len(valid_dataset),
+                        "valid_samples": len(valid_dataset) if valid_dataset is not None else 0,
                         "world_size": world_size,
                         "z1_labels": len(z1_label_to_id),
                         "z2_labels": len(z2_label_to_id),
@@ -1047,6 +1066,8 @@ def main() -> None:
                     }
                 )
             if args.eval_during_train and rank == 0:
+                if valid_loader is None:
+                    raise RuntimeError("Validation loader is unavailable")
                 best_eval = evaluate(model, valid_loader, device, args.lm_loss_weight, args.alpha_prefix)
                 print(f"eval epoch {epoch}: {json.dumps(best_eval, ensure_ascii=False)}", flush=True)
                 epoch_summaries[-1]["valid"] = best_eval
@@ -1062,7 +1083,7 @@ def main() -> None:
                     "base_model": args.base_model,
                     "tokenizer_path": args.tokenizer_path,
                     "train_dataset": str(args.train_dataset),
-                    "valid_dataset": str(args.valid_dataset),
+                    "valid_dataset": str(args.valid_dataset) if args.valid_dataset is not None else None,
                     "batch_size": args.batch_size,
                     "grad_accum": args.grad_accum,
                     "num_train_epochs": args.num_train_epochs,
@@ -1080,9 +1101,9 @@ def main() -> None:
                     "z12": len(z12_label_to_id),
                 },
                 "train_samples": len(train_dataset),
-                "valid_samples": len(valid_dataset),
+                "valid_samples": len(valid_dataset) if valid_dataset is not None else 0,
                 "train_skipped": dict(train_dataset.skipped),
-                "valid_skipped": dict(valid_dataset.skipped),
+                "valid_skipped": dict(valid_dataset.skipped) if valid_dataset is not None else {},
                 "reliability": reliability_summary(train_dataset.items, normalizer),
                 "epoch_summaries": epoch_summaries,
                 "final_eval": best_eval,

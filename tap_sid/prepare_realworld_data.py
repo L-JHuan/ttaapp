@@ -34,13 +34,31 @@ def collapse_consecutive_same_poi(events: pd.DataFrame) -> tuple[pd.DataFrame, i
     return collapsed, len(ordered) - len(collapsed)
 
 
+def assign_split(
+    target_time: pd.Timestamp,
+    train_end: pd.Timestamp,
+    validation_end: pd.Timestamp | None,
+) -> str:
+    """按全局时间边界分配目标；无验证集时训练边界后的目标全部进入测试集。"""
+    if target_time <= train_end:
+        return "train"
+    if validation_end is not None and target_time <= validation_end:
+        return "validation"
+    return "test"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare chronological TAP-SID sequences from event logs.")
     parser.add_argument("--events", type=Path, required=True)
     parser.add_argument("--pois", type=Path, required=True)
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--train_end", required=True, help="UTC cutoff, inclusive, e.g. 2025-01-01T00:00:00Z")
-    parser.add_argument("--validation_end", required=True, help="UTC cutoff, inclusive")
+    parser.add_argument("--validation_end", help="UTC cutoff, inclusive")
+    parser.add_argument(
+        "--no_validation",
+        action="store_true",
+        help="Use a train/test time split and omit the validation split.",
+    )
     parser.add_argument("--user_col", default="user_id")
     parser.add_argument("--poi_col", default="poi_id")
     parser.add_argument("--timestamp_col", default="timestamp")
@@ -131,13 +149,16 @@ def main() -> None:
     events = events.sort_values(["_time", "_user", "_poi"]).reset_index(drop=True)
 
     train_end = pd.Timestamp(args.train_end)
-    validation_end = pd.Timestamp(args.validation_end)
-    if train_end.tzinfo is None or validation_end.tzinfo is None:
-        raise ValueError("train_end 和 validation_end 必须显式包含时区")
+    if not args.no_validation and not args.validation_end:
+        raise ValueError("使用验证集时必须提供 validation_end")
+    validation_end = None if args.no_validation else pd.Timestamp(args.validation_end)
+    if train_end.tzinfo is None or (validation_end is not None and validation_end.tzinfo is None):
+        raise ValueError("时间边界必须显式包含时区")
     train_end = train_end.tz_convert("UTC")
-    validation_end = validation_end.tz_convert("UTC")
-    if validation_end <= train_end:
-        raise ValueError("validation_end 必须晚于 train_end")
+    if validation_end is not None:
+        validation_end = validation_end.tz_convert("UTC")
+        if validation_end <= train_end:
+            raise ValueError("validation_end 必须晚于 train_end")
 
     train_events = events[events["_time"] <= train_end]
     train_users = set(train_events["_user"])
@@ -186,12 +207,7 @@ def main() -> None:
         for index in range(args.min_history_length, len(records)):
             target = records[index]
             history = records[max(0, index - max_history) : index]
-            if target["_time"] <= train_end:
-                split = "train"
-            elif target["_time"] <= validation_end:
-                split = "validation"
-            else:
-                split = "test"
+            split = assign_split(target["_time"], train_end, validation_end)
             sequence = history + [target]
             split_rows[split].append(
                 {
@@ -209,7 +225,9 @@ def main() -> None:
         "validation": "validation_poi_sequence.csv",
         "test": "test_poi_sequence.csv",
     }
-    for split, filename in split_names.items():
+    enabled_splits = ("train", "test") if args.no_validation else tuple(split_names)
+    for split in enabled_splits:
+        filename = split_names[split]
         frame = pd.DataFrame(split_rows[split])
         if frame.empty:
             raise ValueError(f"{split} 切分没有有效样本，请检查时间边界")
@@ -231,7 +249,8 @@ def main() -> None:
         "city": args.city or None,
         "event_type": args.event_type or None,
         "train_end_utc": train_end.isoformat(),
-        "validation_end_utc": validation_end.isoformat(),
+        "validation_end_utc": validation_end.isoformat() if validation_end is not None else None,
+        "no_validation": args.no_validation,
         "catalog_scope": args.catalog_scope,
         "max_sequence_length": args.max_sequence_length,
         "min_history_length": args.min_history_length,

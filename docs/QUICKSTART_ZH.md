@@ -1,6 +1,6 @@
 # TAP-SID 快速运行指南
 
-本文档说明如何从一张 TSMC2014 格式的签到文件，或两张通用 CSV 表，完成数据准备、训练和测试。
+本文档说明如何从工业 JSONL、TSMC2014 格式签到文件或两张通用 CSV 表，完成数据准备、训练和测试。
 
 ## 1. 获取代码与安装环境
 
@@ -25,6 +25,14 @@ user_id, poiid, new_key_type, longitude, latitude, log_time
 
 在配置中设置 `INDUSTRIAL_JSONL` 后，程序会生成标准事件表和 POI 表，并自动合并每位用户
 连续上报的相同 POI。合并后仍采用逐位置滚动预测，但目标变为下一个不同 POI。
+
+工业 JSONL 每行必须是一个完整 JSON 对象，例如：
+
+```json
+{"user_id":"u_hash","poiid":"p_hash","new_key_type":"生活服务/住宅区/住宅小区","longitude":116.5,"latitude":35.7,"log_time":"2026-07-01 08:00:00"}
+```
+
+用户和 POI 可以使用稳定哈希值，但同一实体在所有记录中必须保持同一个值。
 
 ### 2.2 单个签到文件（推荐）
 
@@ -67,6 +75,12 @@ p_12,31.2304,121.4737,Food,Coffee
 
 ```bash
 cp configs/example.env configs/local.env
+```
+
+工业 JSONL 建议直接复制专用模板：
+
+```bash
+cp configs/industrial.example.env configs/local.env
 ```
 
 编辑 `configs/local.env`。使用单文件输入时配置为：
@@ -125,6 +139,45 @@ target_time > VALIDATION_END                    -> test
 
 例如，上述配置使用 2024 年 10 月及以前的数据训练，使用 2024 年 11 月验证，使用 2024 年 12 月及以后数据测试。时间点应根据实际数据覆盖范围填写，确保三个区间都有事件。
 
+### 3.1 工业数据的 train/test 配置
+
+若工业数据只划分训练集和测试集，可使用：
+
+```bash
+INDUSTRIAL_JSONL=./data/raw/output.jsonl
+INDUSTRIAL_TIMEZONE_OFFSET_MINUTES=480
+
+TSMC_FILE=
+EVENTS=
+POIS=
+
+PROCESSED_ROOT=./data/processed/industrial_run
+RUN_ROOT=./outputs/industrial_run
+
+# 时间边界必须带时区。该示例对应北京时间 2026-07-17 23:59:59。
+TRAIN_END=2026-07-17T15:59:59Z
+VALIDATION_END=
+NO_VALIDATION=1
+DEFAULT_TIMEZONE_OFFSET_MINUTES=480
+
+BASE_MODEL=/path/to/Meta-Llama-3-8B-Instruct
+
+N_COARSE_REGIONS=64
+N_FINE_REGIONS=256
+
+NPROC_PER_NODE=2
+DEVICE=cuda:0
+```
+
+此时：
+
+```text
+target_time <= TRAIN_END   -> train
+target_time > TRAIN_END    -> test
+```
+
+程序不会生成 `llm_val.json`。训练脚本使用固定轮数并保存最终 checkpoint，不会读取测试指标选择模型。
+
 `DEFAULT_TIMEZONE_OFFSET_MINUTES=480` 表示当地时间为 UTC+8。若 `timestamp` 已带有 `Z` 或明确时区，程序先统一为 UTC，再使用该偏移生成提示中的当地时间。
 
 加载配置：
@@ -162,7 +215,7 @@ outputs/example/
   data/llm_test.json
 ```
 
-首先检查 `protocol_report.json`，确认 train、validation 和 test 均包含有效样本，再开始训练。若使用单文件输入，还应检查 `converted_raw/conversion_report.json` 中的丢弃行数和未映射类别数。
+首先检查 `protocol_report.json`，确认启用的 split 均包含有效样本，再开始训练。三段切分应检查 train、validation 和 test；`NO_VALIDATION=1` 时只检查 train 和 test。若使用原始单文件输入，还应检查 `converted_raw/conversion_report.json`。
 
 ## 5. 训练
 
@@ -204,9 +257,27 @@ outputs/example/eval/test_metrics.json
 
 评估脚本会检查两个 JSON 文件是否能够正常解析。指标文件包含 Recall@1、Recall@5、Recall@10 和 NDCG@10。
 
-## 7. 常见检查
+## 7. 完整工业运行顺序
 
-- 数据准备后某个 split 为空：调整 `TRAIN_END` 和 `VALIDATION_END`，使其落在实际时间范围内。
+配置加载后，按顺序执行：
+
+```bash
+bash scripts/prepare_data.sh &&
+bash scripts/train.sh &&
+bash scripts/evaluate.sh
+```
+
+使用 `&&` 可保证前一阶段失败后不会继续执行。正式长任务建议分别保存日志：
+
+```bash
+bash scripts/prepare_data.sh > prepare.log 2>&1 &&
+bash scripts/train.sh > train.log 2>&1 &&
+bash scripts/evaluate.sh > evaluate.log 2>&1
+```
+
+## 8. 常见检查
+
+- 数据准备后某个 split 为空：调整时间边界，使其落在实际数据时间范围内。
 - 找不到 POI：确认 `events.csv` 与 `pois.csv` 使用完全一致的 `poi_id`。
 - 类别校验失败：同一个 `category_l2` 只能属于一个 `category_l1`。
 - 模型加载失败：确认 `BASE_MODEL` 指向完整的 Hugging Face 模型目录。

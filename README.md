@@ -34,6 +34,8 @@ For industrial behavior logs, set `INDUSTRIAL_JSONL` to a JSONL file containing
 `user_id`, `poiid`, `new_key_type`, `longitude`, `latitude`, and `log_time`.
 Consecutive reports from the same user at the same POI are treated as one
 observed location state before next-POI samples are constructed.
+For a train/test-only industrial split, set `NO_VALIDATION=1`, leave
+`VALIDATION_END` empty, and use `TRAIN_END` as the inclusive training cutoff.
 
 The simplest input is one TSMC2014-compatible eight-column TSV file containing
 user ID, POI ID, category ID/name, coordinates, timezone offset, and UTC time.
@@ -49,6 +51,8 @@ The existing two-table input remains available when `TSMC_FILE` is empty:
 Start with [`docs/QUICKSTART.md`](docs/QUICKSTART.md), or use the detailed
 Chinese guide [`docs/QUICKSTART_ZH.md`](docs/QUICKSTART_ZH.md). The remaining
 documents describe the input schema and chronological split protocol.
+For an industrial handoff, use
+[`docs/INDUSTRIAL_RUN_ZH.md`](docs/INDUSTRIAL_RUN_ZH.md).
 
 ## Run
 
@@ -68,6 +72,12 @@ source configs/local.env
 set +a
 ```
 
+For an industrial JSONL run, start from the dedicated template:
+
+```bash
+cp configs/industrial.example.env configs/local.env
+```
+
 Run the three stages separately:
 
 ```bash
@@ -75,6 +85,10 @@ bash scripts/prepare_data.sh
 bash scripts/train.sh
 bash scripts/evaluate.sh
 ```
+
+Run the stages in this order. Each stage validates its required inputs and
+writes to `PROCESSED_ROOT` or `RUN_ROOT`; generated data, checkpoints, logs, and
+predictions are excluded from Git.
 
 The training script defaults to one process. To use multiple GPUs, set
 `CUDA_VISIBLE_DEVICES` and `NPROC_PER_NODE` in the execution environment. See
