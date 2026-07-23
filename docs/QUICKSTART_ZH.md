@@ -167,6 +167,7 @@ N_FINE_REGIONS=256
 
 NPROC_PER_NODE=2
 DEVICE=cuda:0
+EVAL_GPUS=0,1
 ```
 
 此时：
@@ -241,12 +242,16 @@ bash scripts/train.sh
 outputs/example/checkpoint/final_sft/
 ```
 
-## 6. 测试
+## 6. 多卡测试
 
 ```bash
-export DEVICE=cuda:0
+export EVAL_GPUS=0,1
 bash scripts/evaluate.sh
 ```
+
+`EVAL_GPUS` 可以配置为任意数量的 GPU，例如 `0,1,2,3`。每张 GPU 处理一个独立
+测试分片，全部完成后按照原始样本索引合并并重新计算全量指标。单卡运行时设置为
+`EVAL_GPUS=0`。
 
 输出文件：
 
@@ -255,7 +260,8 @@ outputs/example/eval/test_predictions.json
 outputs/example/eval/test_metrics.json
 ```
 
-评估脚本会检查两个 JSON 文件是否能够正常解析。指标文件包含 Recall@1、Recall@5、Recall@10 和 NDCG@10。
+评估脚本会检查分片是否完整覆盖测试集，以及两个正式 JSON 文件是否能够正常解析。
+指标文件包含 Recall@1、Recall@5、Recall@10 和 NDCG@10。
 
 ## 7. 完整工业运行顺序
 
@@ -282,4 +288,5 @@ bash scripts/evaluate.sh > evaluate.log 2>&1
 - 类别校验失败：同一个 `category_l2` 只能属于一个 `category_l1`。
 - 模型加载失败：确认 `BASE_MODEL` 指向完整的 Hugging Face 模型目录。
 - 多卡训练未启用：确认可见 GPU 数量与 `NPROC_PER_NODE` 相同。
+- 多卡测试分片失败：检查 `$RUN_ROOT/eval/shards/<run_id>/logs/` 下对应 GPU 的日志。
 - 更换数据集重跑：为 `PROCESSED_ROOT` 和 `RUN_ROOT` 使用新的目录，避免覆盖已有产物。

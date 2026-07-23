@@ -88,7 +88,12 @@ def generate_one(
         return_dict_in_generate=True,
         output_scores=True,
     )
-    sequence_scores = output.sequences_scores.detach().float().cpu().tolist()
+    output_sequence_scores = getattr(output, "sequences_scores", None)
+    sequence_scores = (
+        output_sequence_scores.detach().float().cpu().tolist()
+        if output_sequence_scores is not None
+        else [0.0] * int(output.sequences.shape[0])
+    )
     rows: list[dict[str, Any]] = []
     for sequence, score in zip(output.sequences, sequence_scores):
         response_ids = sequence[prompt_len:].detach().cpu().tolist()
@@ -110,7 +115,9 @@ def run_eval(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, 
     parse_stats = Counter()
     length_hist = Counter()
 
-    for row in tqdm(dataset_rows, desc="TAP-SID constrained eval", mininterval=30):
+    for local_index, row in enumerate(
+        tqdm(dataset_rows, desc="TAP-SID constrained eval", mininterval=30)
+    ):
         prompt = format_prompt(row)
         generated = generate_one(
             model,
@@ -144,20 +151,25 @@ def run_eval(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, 
             if len(unique) >= args.k:
                 break
         predictions.append(unique)
-        output_rows.append(
-            {
-                "gold": row.get("output", row.get("gold", "")),
-                "predictions": dedupe_topk(unique, args.k),
-                "raw_predictions": raw_predictions,
-                "input": row.get("input", ""),
-            }
-        )
+        output_row = {
+            "gold": row.get("output", row.get("gold", "")),
+            "predictions": dedupe_topk(unique, args.k),
+            "raw_predictions": raw_predictions,
+            "input": row.get("input", ""),
+        }
+        if "_tap_sample_index" in row:
+            output_row["sample_index"] = int(row["_tap_sample_index"])
+        elif args.num_shards > 1:
+            raise ValueError("多分片评估数据缺少 _tap_sample_index")
+        output_rows.append(output_row)
 
     metric_out = metrics(dataset_rows, predictions)
     metric_out.update(
         {
             "samples": len(dataset_rows),
             "prediction_samples": len(output_rows),
+            "shard_index": args.shard_index,
+            "num_shards": args.num_shards,
             "constrained_sid": True,
             "num_beams": args.num_beams,
             "k": args.k,
@@ -176,6 +188,8 @@ def run_eval(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, 
                 "num_beams": args.num_beams,
                 "device": args.device,
                 "limit": args.limit,
+                "shard_index": args.shard_index,
+                "num_shards": args.num_shards,
             },
         }
     )
@@ -204,7 +218,12 @@ def main() -> None:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no_cache", action="store_true")
+    parser.add_argument("--shard_index", type=int, default=0)
+    parser.add_argument("--num_shards", type=int, default=1)
     args = parser.parse_args()
+
+    if args.num_shards <= 0 or not 0 <= args.shard_index < args.num_shards:
+        raise ValueError("shard_index 必须位于 [0, num_shards) 范围内")
 
     predictions, metric_out = run_eval(args)
     args.output_predictions.parent.mkdir(parents=True, exist_ok=True)

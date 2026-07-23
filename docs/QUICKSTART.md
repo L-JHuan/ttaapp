@@ -102,6 +102,17 @@ export NPROC_PER_NODE=2
 bash scripts/train.sh
 ```
 
+For sharded evaluation on any number of GPUs:
+
+```bash
+export EVAL_GPUS=0,1,2,3
+bash scripts/evaluate.sh
+```
+
+Each GPU evaluates one data shard. The script writes isolated shard outputs,
+checks exact sample coverage, restores the original sample order, and recomputes
+the final metrics on the merged predictions.
+
 Predictions and metrics are written to `$RUN_ROOT/eval/`. See
 [`QUICKSTART_ZH.md`](QUICKSTART_ZH.md) for detailed configuration, expected
 outputs, and troubleshooting.

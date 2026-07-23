@@ -83,7 +83,7 @@ NO_VALIDATION=1
 
 BASE_MODEL=/path/to/Meta-Llama-3-8B-Instruct
 NPROC_PER_NODE=2
-DEVICE=cuda:0
+EVAL_GPUS=0,1
 ```
 
 `TRAIN_END` 是包含端点的 UTC 时间。若原始时间按北京时间解释，北京时间
@@ -151,12 +151,25 @@ $RUN_ROOT/checkpoint/training_summary.json
 
 无验证集模式使用固定 3 个 epoch，并保存最终 checkpoint，不根据测试指标选择模型。
 
-## 7. 测试
+## 7. 多卡测试
 
 ```bash
-export DEVICE=cuda:0
+export EVAL_GPUS=0,1
 bash scripts/evaluate.sh > evaluate.log 2>&1
 ```
+
+`EVAL_GPUS` 接受任意数量的逗号分隔 GPU，例如 `0,1,2,3`。评估采用数据并行：
+每张 GPU 独立加载模型并处理一个测试分片，全部分片成功后按原始样本索引合并，并基于
+完整测试集重新计算指标。该方式不要求特定 GPU 型号，但每张 GPU 都必须能够独立加载
+基础模型和 LoRA adapter。
+
+各分片的预测、指标和日志保存在：
+
+```text
+$RUN_ROOT/eval/shards/<run_id>/
+```
+
+若任意分片失败，脚本不会写入新的正式合并结果。可通过 `EVAL_RUN_ID` 为重跑指定独立名称。
 
 输出：
 
@@ -166,7 +179,7 @@ $RUN_ROOT/eval/test_metrics.json
 ```
 
 `test_metrics.json` 包含 Recall@1、Recall@5、Recall@10 和 NDCG@10。
-评估脚本结束前会验证两个 JSON 文件均可解析。
+评估脚本还会检查全部样本恰好出现一次，并在结束前验证两个 JSON 文件均可解析。
 
 ## 8. 串联运行
 

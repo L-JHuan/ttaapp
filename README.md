@@ -52,7 +52,8 @@ Start with [`docs/QUICKSTART.md`](docs/QUICKSTART.md), or use the detailed
 Chinese guide [`docs/QUICKSTART_ZH.md`](docs/QUICKSTART_ZH.md). The remaining
 documents describe the input schema and chronological split protocol.
 For an industrial handoff, use
-[`docs/INDUSTRIAL_RUN_ZH.md`](docs/INDUSTRIAL_RUN_ZH.md).
+[`docs/INDUSTRIAL_RUN_ZH.md`](docs/INDUSTRIAL_RUN_ZH.md), which includes
+configurable multi-GPU sharded evaluation.
 
 ## Run
 
