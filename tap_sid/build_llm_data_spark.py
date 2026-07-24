@@ -43,8 +43,13 @@ def main() -> None:
     if codebook.filter(F.col("pid").isNull() | F.col("sid").isNull()).limit(1).count():
         raise ValueError("TAP-SID codebook contains invalid pid or sid_tokens")
 
+    splits = ["train"]
+    if (args.sequence_root / "val").exists():
+        splits.append("val")
+    splits.append("test")
+
     reports: dict[str, dict[str, int]] = {}
-    for split in ("train", "test"):
+    for split in splits:
         sequences = spark.read.parquet(str(args.sequence_root / split))
         exploded = sequences.select(
             "sample_id",

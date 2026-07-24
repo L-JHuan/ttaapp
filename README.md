@@ -36,6 +36,10 @@ Consecutive reports from the same user at the same POI are treated as one
 observed location state before next-POI samples are constructed.
 For a train/test-only industrial split, set `NO_VALIDATION=1`, leave
 `VALIDATION_END` empty, and use `TRAIN_END` as the inclusive training cutoff.
+For a three-way split, set `NO_VALIDATION=0` and provide both time boundaries.
+The trainer saves every epoch and selects the checkpoint with the lowest
+validation teacher-forcing language-model loss; the test set is never used for
+checkpoint selection.
 
 The simplest input is one TSMC2014-compatible eight-column TSV file containing
 user ID, POI ID, category ID/name, coordinates, timezone offset, and UTC time.

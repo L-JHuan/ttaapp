@@ -79,5 +79,5 @@ python -m tap_sid.build_llm_data \
   --sid_csv "$SID_CSV" \
   --split_dir "$PROCESSED_ROOT/v1_sequence" \
   --output_dir "$RUN_ROOT/data" \
-  --keep_last_k_train 5 \
+  --keep_last_k_train "${KEEP_LAST_K_TRAIN:-5}" \
   "${LLM_EXTRA_ARGS[@]}"

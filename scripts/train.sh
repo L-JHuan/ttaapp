@@ -28,8 +28,12 @@ if [[ ! -e "$TRAIN_DATASET" ]]; then
   exit 2
 fi
 
-if [[ -f "$RUN_ROOT/data/llm_val.json" ]]; then
-  VALID_ARGS+=(--valid_dataset "$RUN_ROOT/data/llm_val.json")
+VALID_DATASET=${VALID_DATASET:-"$RUN_ROOT/data/llm_val.json"}
+if [[ ! -e "$VALID_DATASET" && -d "$RUN_ROOT/data/llm_val.jsonl" ]]; then
+  VALID_DATASET="$RUN_ROOT/data/llm_val.jsonl"
+fi
+if [[ -e "$VALID_DATASET" ]]; then
+  VALID_ARGS+=(--valid_dataset "$VALID_DATASET" --eval_during_train)
 fi
 
 TQDM_MININTERVAL=60 TQDM_MINITERS=50 \

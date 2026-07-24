@@ -16,6 +16,21 @@ def parse_utc(value: str) -> datetime:
     return parsed.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+def resolve_split_boundaries(
+    train_end_value: str,
+    validation_end_value: str,
+) -> tuple[datetime, datetime | None]:
+    train_end = parse_utc(train_end_value)
+    validation_end = (
+        parse_utc(validation_end_value)
+        if validation_end_value.strip()
+        else None
+    )
+    if validation_end is not None and validation_end <= train_end:
+        raise ValueError("validation_end 必须晚于 train_end")
+    return train_end, validation_end
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Use Spark to prepare large industrial JSONL logs without event-level CSV files."
@@ -23,6 +38,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True, help="JSONL file, glob, or directory understood by Spark")
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--train_end", required=True, help="Inclusive UTC cutoff")
+    parser.add_argument(
+        "--validation_end",
+        default="",
+        help="Inclusive UTC validation cutoff; empty means train/test only",
+    )
     parser.add_argument("--timezone_offset_minutes", type=int, default=480)
     parser.add_argument("--max_sequence_length", type=int, default=50)
     parser.add_argument("--min_history_length", type=int, default=1)
@@ -141,7 +161,10 @@ def main() -> None:
     )
     deduplicated = spark.read.parquet(str(deduplicated_path))
 
-    train_end = parse_utc(args.train_end)
+    train_end, validation_end = resolve_split_boundaries(
+        args.train_end,
+        args.validation_end,
+    )
     train_events = deduplicated.filter(F.col("_time") <= F.lit(train_end))
     train_users = train_events.select("_user").distinct()
     train_pois = train_events.select("_poi").distinct()
@@ -286,7 +309,15 @@ def main() -> None:
         .filter(F.col("_train_rank") <= args.keep_last_k_train)
         .drop("_train_rank")
     )
-    test_samples = samples.filter(F.col("_time") > F.lit(train_end))
+    if validation_end is not None:
+        validation_samples = samples.filter(
+            (F.col("_time") > F.lit(train_end))
+            & (F.col("_time") <= F.lit(validation_end))
+        )
+        test_samples = samples.filter(F.col("_time") > F.lit(validation_end))
+    else:
+        validation_samples = None
+        test_samples = samples.filter(F.col("_time") > F.lit(train_end))
 
     sequence_root = output / "sequence_parquet"
     output_columns = [
@@ -302,6 +333,13 @@ def main() -> None:
         .write.mode(mode)
         .parquet(str(sequence_root / "train"))
     )
+    if validation_samples is not None:
+        (
+            validation_samples.select(*output_columns)
+            .repartition(args.output_partitions, "UserId")
+            .write.mode(mode)
+            .parquet(str(sequence_root / "val"))
+        )
     (
         test_samples.select(*output_columns)
         .repartition(args.output_partitions, "UserId")
@@ -320,10 +358,15 @@ def main() -> None:
         "train_samples_last_k": spark.read.parquet(str(sequence_root / "train")).count(),
         "test_samples": spark.read.parquet(str(sequence_root / "test")).count(),
     }
+    if validation_samples is not None:
+        counts["validation_samples"] = spark.read.parquet(
+            str(sequence_root / "val")
+        ).count()
     report = {
         "engine": "spark",
         "input": args.input,
         "train_end_utc": args.train_end,
+        "validation_end_utc": args.validation_end or None,
         "timezone_offset_minutes": args.timezone_offset_minutes,
         "max_sequence_length": args.max_sequence_length,
         "min_history_length": args.min_history_length,

@@ -242,6 +242,11 @@ bash scripts/train.sh
 outputs/example/checkpoint/final_sft/
 ```
 
+当 `VALIDATION_END` 非空且 `NO_VALIDATION=0` 时，训练脚本会在每个 epoch 后保存
+`checkpoint/checkpoints/epoch_XXX/`，并按验证集 teacher-forcing `lm_loss` 选择最优
+epoch。所选 adapter 会复制到兼容现有评估入口的 `checkpoint/final_sft/`；测试指标不参与
+checkpoint 选择。`KEEP_LAST_K_TRAIN=5` 只限制训练目标数，不限制验证集和测试集。
+
 ## 6. 多卡测试
 
 ```bash

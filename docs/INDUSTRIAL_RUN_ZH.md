@@ -34,12 +34,12 @@ checkpoint 和预测结果均被 `.gitignore` 排除，不应提交到 Git。
   -> 用户内按时间排序
   -> 删除完全重复事件
   -> 合并连续相同 POI 报告
-  -> 按全局时间划分 train/test
+  -> 按全局时间划分 train/validation/test
   -> 仅保留训练期可见用户和 POI
   -> 滚动构造下一不同 POI 状态预测样本
   -> 每用户保留最后 5 个训练目标
   -> 构造 TAP-SID
-  -> 生成 LLM 训练与测试 JSON
+  -> 生成 LLM 训练、验证与测试 JSON
 ```
 
 连续状态合并示例：
@@ -78,16 +78,17 @@ INDUSTRIAL_JSONL=/path/to/output.jsonl
 PROCESSED_ROOT=/path/to/processed_data
 RUN_ROOT=/path/to/experiment_outputs
 
-TRAIN_END=2026-07-17T15:59:59Z
-NO_VALIDATION=1
+TRAIN_END=2026-07-14T15:59:59Z
+VALIDATION_END=2026-07-17T15:59:59Z
+NO_VALIDATION=0
 
 BASE_MODEL=/path/to/Meta-Llama-3-8B-Instruct
 NPROC_PER_NODE=2
 EVAL_GPUS=0,1
 ```
 
-`TRAIN_END` 是包含端点的 UTC 时间。若原始时间按北京时间解释，北京时间
-`2026-07-17 23:59:59` 对应 `2026-07-17T15:59:59Z`。应根据实际数据范围调整。
+两个时间边界均为包含端点的 UTC 时间。上述示例对应北京时间
+`07-01--14 / 07-15--17 / 07-18--20` 的 14/3/3 天全局时间切分，应根据实际数据范围调整。
 
 加载配置：
 
@@ -182,12 +183,14 @@ $PROCESSED_ROOT/
   mappings/                       # 用户、POI、类别内部映射
   metadata/catalog/               # POI 级 Parquet
   sequence_parquet/train/         # last-5 训练序列
+  sequence_parquet/val/           # 滚动验证序列
   sequence_parquet/test/          # 滚动测试序列
   spark_protocol_report.json
 
 $RUN_ROOT/
   codebook/tap_sid.csv
   data/llm_train.jsonl/           # Spark JSONL 分片目录
+  data/llm_val.jsonl/             # Spark JSONL 分片目录
   data/llm_test.jsonl/            # Spark JSONL 分片目录
 ```
 
@@ -209,10 +212,20 @@ bash scripts/train.sh > train.log 2>&1
 ```text
 $RUN_ROOT/checkpoint/final_sft/adapter_config.json
 $RUN_ROOT/checkpoint/final_sft/adapter_model.bin
+$RUN_ROOT/checkpoint/checkpoints/epoch_001/
+$RUN_ROOT/checkpoint/checkpoints/epoch_002/
+$RUN_ROOT/checkpoint/checkpoints/epoch_003/
 $RUN_ROOT/checkpoint/training_summary.json
 ```
 
-无验证集模式使用固定 3 个 epoch，并保存最终 checkpoint，不根据测试指标选择模型。
+训练脚本在每个 epoch 结束后保存一个 LoRA checkpoint，并在全部 GPU 上分片计算验证集
+teacher-forcing loss。验证集 `lm_loss` 最低的 epoch 会被复制为 `final_sft`，相同损失时
+选择更早的 epoch；测试集不参与模型选择。`training_summary.json` 中记录每轮指标、
+`best_epoch` 和所选 checkpoint。训练集仍只保留每位用户最后 5 个有效目标，验证集和
+测试集保留各自时间窗口内的全部滚动目标。
+
+若显式设置 `NO_VALIDATION=1` 且留空 `VALIDATION_END`，脚本会退化为固定轮数训练并选择
+最后一个 epoch。
 
 ## 7. 多卡测试
 

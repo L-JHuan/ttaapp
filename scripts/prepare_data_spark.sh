@@ -20,6 +20,19 @@ MAX_SEQUENCE_LENGTH=${MAX_SEQUENCE_LENGTH:-50}
 MIN_HISTORY_LENGTH=${MIN_HISTORY_LENGTH:-1}
 KEEP_LAST_K_TRAIN=${KEEP_LAST_K_TRAIN:-5}
 SID_CSV="$RUN_ROOT/codebook/tap_sid.csv"
+VALIDATION_ARGS=()
+NO_VALIDATION=${NO_VALIDATION:-0}
+if [[ "$NO_VALIDATION" == "1" ]]; then
+  if [[ -n "${VALIDATION_END:-}" ]]; then
+    echo "NO_VALIDATION=1 requires an empty VALIDATION_END" >&2
+    exit 2
+  fi
+elif [[ -n "${VALIDATION_END:-}" ]]; then
+  VALIDATION_ARGS+=(--validation_end "$VALIDATION_END")
+else
+  echo "Set VALIDATION_END or set NO_VALIDATION=1" >&2
+  exit 2
+fi
 
 mkdir -p "$RUN_ROOT/codebook" "$RUN_ROOT/data"
 
@@ -37,6 +50,7 @@ fi
   --input "$INDUSTRIAL_JSONL" \
   --output_dir "$PROCESSED_ROOT" \
   --train_end "$TRAIN_END" \
+  "${VALIDATION_ARGS[@]}" \
   --timezone_offset_minutes "$INDUSTRIAL_TIMEZONE_OFFSET_MINUTES" \
   --max_sequence_length "$MAX_SEQUENCE_LENGTH" \
   --min_history_length "$MIN_HISTORY_LENGTH" \
@@ -65,4 +79,7 @@ fi
 echo "Spark preprocessing completed."
 echo "Protocol report: $PROCESSED_ROOT/spark_protocol_report.json"
 echo "Training shards: $RUN_ROOT/data/llm_train.jsonl"
+if [[ -d "$RUN_ROOT/data/llm_val.jsonl" ]]; then
+  echo "Validation shards: $RUN_ROOT/data/llm_val.jsonl"
+fi
 echo "Test shards: $RUN_ROOT/data/llm_test.jsonl"

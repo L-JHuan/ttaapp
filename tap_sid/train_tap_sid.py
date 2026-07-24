@@ -17,6 +17,7 @@ import math
 import os
 import random
 import re
+import shutil
 import time
 from collections import Counter
 from contextlib import nullcontext
@@ -30,7 +31,7 @@ from peft import LoraConfig, PeftModel, get_peft_model
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -96,6 +97,24 @@ def load_rows(path: Path, limit: int = 0) -> list[dict[str, Any]]:
         if missing:
             raise ValueError(f"{path} row {index} missing fields: {missing}")
     return rows
+
+
+class DistributedEvalSampler(Sampler[int]):
+    """在多进程验证时无填充地划分样本，避免重复样本影响验证损失。"""
+
+    def __init__(self, dataset: Dataset, rank: int, world_size: int) -> None:
+        self.dataset = dataset
+        self.rank = rank
+        self.world_size = world_size
+
+    def __iter__(self):
+        return iter(range(self.rank, len(self.dataset), self.world_size))
+
+    def __len__(self) -> int:
+        remaining = len(self.dataset) - self.rank
+        if remaining <= 0:
+            return 0
+        return (remaining + self.world_size - 1) // self.world_size
 
 
 def build_z1_vocab(rows: list[dict[str, Any]]) -> tuple[dict[str, int], dict[str, int]]:
@@ -642,28 +661,42 @@ def evaluate(
     device: torch.device,
     lm_loss_weight: float,
     alpha_prefix: float,
+    distributed: bool,
+    rank: int,
 ) -> dict[str, float]:
-    model.eval()
+    eval_model = model.module if isinstance(model, DistributedDataParallel) else model
+    eval_model.eval()
+    metric_keys = ("loss", "lm_loss", "prefix_loss", "prefix_loss_unweighted", "z1_accuracy")
     sums = Counter()
     total = 0
-    for batch in tqdm(loader, desc="eval", mininterval=30):
+    for batch in tqdm(loader, desc="eval", mininterval=30, disable=rank != 0):
         tensor_batch = {
             key: value.to(device)
             for key, value in batch.items()
             if isinstance(value, torch.Tensor)
         }
-        out = model(
+        out = eval_model(
             **tensor_batch,
             lm_loss_weight=lm_loss_weight,
             alpha_prefix=alpha_prefix,
         )
         batch_size = int(tensor_batch["input_ids"].shape[0])
         total += batch_size
-        for key in ("loss", "lm_loss", "prefix_loss", "prefix_loss_unweighted", "z1_accuracy"):
+        for key in metric_keys:
             sums[key] += float(out[key].item()) * batch_size
-    model.train()
-    denom = max(total, 1)
-    return {key: float(value) / denom for key, value in sums.items()}
+    packed = torch.tensor(
+        [float(sums[key]) for key in metric_keys] + [float(total)],
+        dtype=torch.float64,
+        device=device,
+    )
+    if distributed:
+        torch.distributed.all_reduce(packed, op=torch.distributed.ReduceOp.SUM)
+    eval_model.train()
+    denom = max(float(packed[-1].item()), 1.0)
+    return {
+        key: float(packed[index].item()) / denom
+        for index, key in enumerate(metric_keys)
+    }
 
 
 def train_epoch(
@@ -681,6 +714,7 @@ def train_epoch(
     optimizer.zero_grad(set_to_none=True)
     iterator = tqdm(loader, desc=f"train epoch {epoch}", mininterval=30, disable=rank != 0)
     sums = Counter()
+    epoch_sums = Counter()
     metric_keys = (
         "loss",
         "lm_loss",
@@ -694,6 +728,7 @@ def train_epoch(
         "sibling_z2_loss",
     )
     total_samples = 0
+    epoch_samples = 0
     since = time.time()
     for step, batch in enumerate(iterator, start=1):
         tensor_batch = {
@@ -715,8 +750,10 @@ def train_epoch(
             loss.backward()
         batch_size = int(tensor_batch["input_ids"].shape[0])
         total_samples += batch_size
+        epoch_samples += batch_size
         for key in metric_keys:
             sums[key] += float(out[key].item()) * batch_size
+            epoch_sums[key] += float(out[key].item()) * batch_size
         if should_step:
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
@@ -742,7 +779,10 @@ def train_epoch(
                 since = time.time()
             if args.max_steps > 0 and global_step >= args.max_steps:
                 break
-    summary = {key: sums[key] / max(float(total_samples), 1.0) for key in metric_keys}
+    summary = {
+        key: epoch_sums[key] / max(float(epoch_samples), 1.0)
+        for key in metric_keys
+    }
     return global_step, summary
 
 
@@ -756,10 +796,36 @@ def json_safe(value: Any) -> Any:
     return value
 
 
-def save_outputs(
+def select_best_epoch(epoch_summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    if not epoch_summaries:
+        raise ValueError("epoch_summaries 不能为空")
+    validated = []
+    for summary in epoch_summaries:
+        valid = summary.get("valid")
+        if isinstance(valid, dict) and math.isfinite(float(valid.get("lm_loss", math.nan))):
+            validated.append(summary)
+    if validated:
+        selected = min(
+            validated,
+            key=lambda item: (float(item["valid"]["lm_loss"]), int(item["epoch"])),
+        )
+        return {
+            "epoch": int(selected["epoch"]),
+            "metric": "lm_loss",
+            "value": float(selected["valid"]["lm_loss"]),
+            "mode": "min",
+        }
+    selected = max(epoch_summaries, key=lambda item: int(item["epoch"]))
+    return {
+        "epoch": int(selected["epoch"]),
+        "metric": None,
+        "value": None,
+        "mode": "final",
+    }
+
+
+def prefix_head_payload(
     model: nn.Module,
-    tokenizer: Any,
-    output_dir: Path,
     z1_label_to_id: dict[str, int],
     z1_counts: dict[str, int],
     z2_label_to_id: dict[str, int],
@@ -768,16 +834,9 @@ def save_outputs(
     z12_counts: dict[str, int],
     parent_child_ids: list[list[int]],
     parent_child_label_counts: dict[str, dict[str, int]],
-    args: argparse.Namespace,
-    train_summary: dict[str, Any],
-) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
+) -> dict[str, Any]:
     raw_model = model.module if isinstance(model, DistributedDataParallel) else model
-    final_dir = output_dir / "final_sft"
-    final_dir.mkdir(parents=True, exist_ok=True)
-    raw_model.lm.save_pretrained(final_dir, safe_serialization=False)
-    tokenizer.save_pretrained(final_dir)
-    payload = {
+    return {
         "prefix_head_state": raw_model.prefix_head.state_dict(),
         "z2_head_state": raw_model.z2_head.state_dict(),
         "z12_head_state": raw_model.z12_head.state_dict(),
@@ -795,7 +854,54 @@ def save_outputs(
         "parent_child_ids": parent_child_ids,
         "parent_child_label_counts": parent_child_label_counts,
     }
-    torch.save(payload, output_dir / "prefix_head.pt")
+
+
+def save_epoch_checkpoint(
+    model: nn.Module,
+    tokenizer: Any,
+    output_dir: Path,
+    epoch: int,
+    z1_label_to_id: dict[str, int],
+    z1_counts: dict[str, int],
+    z2_label_to_id: dict[str, int],
+    z2_counts: dict[str, int],
+    z12_label_to_id: dict[str, int],
+    z12_counts: dict[str, int],
+    parent_child_ids: list[list[int]],
+    parent_child_label_counts: dict[str, dict[str, int]],
+) -> Path:
+    raw_model = model.module if isinstance(model, DistributedDataParallel) else model
+    checkpoint_dir = output_dir / "checkpoints" / f"epoch_{epoch:03d}"
+    checkpoint_dir.mkdir(parents=True, exist_ok=False)
+    raw_model.lm.save_pretrained(checkpoint_dir, safe_serialization=False)
+    tokenizer.save_pretrained(checkpoint_dir)
+    torch.save(
+        prefix_head_payload(
+            model,
+            z1_label_to_id,
+            z1_counts,
+            z2_label_to_id,
+            z2_counts,
+            z12_label_to_id,
+            z12_counts,
+            parent_child_ids,
+            parent_child_label_counts,
+        ),
+        checkpoint_dir / "prefix_head.pt",
+    )
+    return checkpoint_dir
+
+
+def finalize_selected_checkpoint(
+    output_dir: Path,
+    selected_checkpoint: Path,
+    train_summary: dict[str, Any],
+) -> None:
+    final_dir = output_dir / "final_sft"
+    if final_dir.exists():
+        raise FileExistsError(final_dir)
+    shutil.copytree(selected_checkpoint, final_dir)
+    shutil.copy2(final_dir / "prefix_head.pt", output_dir / "prefix_head.pt")
     (output_dir / "training_summary.json").write_text(
         json.dumps(json_safe(train_summary), ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -983,14 +1089,7 @@ def main() -> None:
             else None
         )
         valid_sampler = (
-            DistributedSampler(
-                valid_dataset,
-                num_replicas=world_size,
-                rank=rank,
-                shuffle=False,
-                seed=args.seed,
-                drop_last=False,
-            )
+            DistributedEvalSampler(valid_dataset, rank=rank, world_size=world_size)
             if distributed and valid_dataset is not None
             else None
         )
@@ -1040,7 +1139,6 @@ def main() -> None:
                 flush=True,
             )
         global_step = 0
-        best_eval = None
         epoch_summaries: list[dict[str, Any]] = []
         for epoch in range(1, args.num_train_epochs + 1):
             if train_sampler is not None:
@@ -1056,25 +1154,59 @@ def main() -> None:
                 distributed,
                 global_step,
             )
-            if rank == 0:
-                epoch_summaries.append(
-                    {
-                        "epoch": epoch,
-                        "global_step": global_step,
-                        "train": epoch_summary,
-                    }
-                )
-            if args.eval_during_train and rank == 0:
+            valid_metrics = None
+            if args.eval_during_train:
                 if valid_loader is None:
                     raise RuntimeError("Validation loader is unavailable")
-                best_eval = evaluate(model, valid_loader, device, args.lm_loss_weight, args.alpha_prefix)
-                print(f"eval epoch {epoch}: {json.dumps(best_eval, ensure_ascii=False)}", flush=True)
-                epoch_summaries[-1]["valid"] = best_eval
+                valid_metrics = evaluate(
+                    model,
+                    valid_loader,
+                    device,
+                    args.lm_loss_weight,
+                    args.alpha_prefix,
+                    distributed,
+                    rank,
+                )
+            if rank == 0:
+                epoch_record = {
+                    "epoch": epoch,
+                    "global_step": global_step,
+                    "train": epoch_summary,
+                }
+                if valid_metrics is not None:
+                    epoch_record["valid"] = valid_metrics
+                    print(
+                        f"eval epoch {epoch}: {json.dumps(valid_metrics, ensure_ascii=False)}",
+                        flush=True,
+                    )
+                checkpoint_dir = save_epoch_checkpoint(
+                    model,
+                    tokenizer,
+                    args.output_dir,
+                    epoch,
+                    z1_label_to_id,
+                    z1_counts,
+                    z2_label_to_id,
+                    z2_counts,
+                    z12_label_to_id,
+                    z12_counts,
+                    parent_child_ids,
+                    parent_child_label_counts,
+                )
+                epoch_record["checkpoint"] = str(checkpoint_dir)
+                epoch_summaries.append(epoch_record)
+                print(f"Saved epoch {epoch} checkpoint -> {checkpoint_dir}", flush=True)
+            if distributed:
+                torch.distributed.barrier()
             if args.max_steps > 0 and global_step >= args.max_steps:
                 break
-        if distributed:
-            torch.distributed.barrier()
         if rank == 0:
+            checkpoint_selection = select_best_epoch(epoch_summaries)
+            selected_epoch = int(checkpoint_selection["epoch"])
+            selected_summary = next(
+                item for item in epoch_summaries if int(item["epoch"]) == selected_epoch
+            )
+            selected_checkpoint = Path(selected_summary["checkpoint"])
             summary = {
                 "model_type": "tap_sid_sft",
                 "args": vars(args),
@@ -1105,24 +1237,21 @@ def main() -> None:
                 "valid_skipped": dict(valid_dataset.skipped) if valid_dataset is not None else {},
                 "reliability": reliability_summary(train_dataset.items, normalizer),
                 "epoch_summaries": epoch_summaries,
-                "final_eval": best_eval,
+                "checkpoint_selection": checkpoint_selection,
+                "best_epoch": selected_epoch,
+                "best_checkpoint": str(selected_checkpoint),
+                "final_eval": selected_summary.get("valid"),
             }
-            save_outputs(
-                model,
-                tokenizer,
+            finalize_selected_checkpoint(
                 args.output_dir,
-                z1_label_to_id,
-                z1_counts,
-                z2_label_to_id,
-                z2_counts,
-                z12_label_to_id,
-                z12_counts,
-                parent_child_ids,
-                parent_child_label_counts,
-                args,
+                selected_checkpoint,
                 summary,
             )
-            print(f"Saved TAP-SID trainer output -> {args.output_dir}", flush=True)
+            print(
+                f"Selected epoch {selected_epoch}; saved TAP-SID trainer output -> "
+                f"{args.output_dir}",
+                flush=True,
+            )
     finally:
         cleanup_distributed(distributed)
 
