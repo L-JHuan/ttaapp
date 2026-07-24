@@ -5,6 +5,17 @@ set -euo pipefail
 : "${RUN_ROOT:?Set RUN_ROOT}"
 
 NPROC_PER_NODE=${NPROC_PER_NODE:-1}
+TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-1}
+TRAIN_EVAL_BATCH_SIZE=${TRAIN_EVAL_BATCH_SIZE:-1}
+TRAIN_GRAD_ACCUM=${TRAIN_GRAD_ACCUM:-8}
+TRAIN_EPOCHS=${TRAIN_EPOCHS:-3}
+TRAIN_LEARNING_RATE=${TRAIN_LEARNING_RATE:-1e-5}
+TRAIN_CUTOFF_LEN=${TRAIN_CUTOFF_LEN:-2048}
+TRAIN_LORA_R=${TRAIN_LORA_R:-16}
+TRAIN_LORA_ALPHA=${TRAIN_LORA_ALPHA:-32}
+TRAIN_LORA_DROPOUT=${TRAIN_LORA_DROPOUT:-0.1}
+TRAIN_SEED=${TRAIN_SEED:-42}
+TRAIN_LOGGING_STEPS=${TRAIN_LOGGING_STEPS:-50}
 CHECKPOINT_DIR="$RUN_ROOT/checkpoint"
 mkdir -p "$CHECKPOINT_DIR"
 VALID_ARGS=()
@@ -26,19 +37,19 @@ torchrun --standalone --nproc_per_node="$NPROC_PER_NODE" -m tap_sid.train_tap_si
   --base_model "$BASE_MODEL" \
   --train_dataset "$TRAIN_DATASET" \
   --output_dir "$CHECKPOINT_DIR" \
-  --batch_size 1 \
-  --eval_batch_size 1 \
-  --grad_accum 8 \
-  --num_train_epochs 3 \
-  --learning_rate 1e-5 \
-  --cutoff_len 2048 \
+  --batch_size "$TRAIN_BATCH_SIZE" \
+  --eval_batch_size "$TRAIN_EVAL_BATCH_SIZE" \
+  --grad_accum "$TRAIN_GRAD_ACCUM" \
+  --num_train_epochs "$TRAIN_EPOCHS" \
+  --learning_rate "$TRAIN_LEARNING_RATE" \
+  --cutoff_len "$TRAIN_CUTOFF_LEN" \
   --lm_loss_weight 1.0 \
   --alpha_prefix 0.0 \
   --head_dropout 0.1 \
-  --lora_r 16 \
-  --lora_alpha 32 \
-  --lora_dropout 0.1 \
+  --lora_r "$TRAIN_LORA_R" \
+  --lora_alpha "$TRAIN_LORA_ALPHA" \
+  --lora_dropout "$TRAIN_LORA_DROPOUT" \
   --gradient_checkpointing \
-  --seed 42 \
-  --logging_steps 50 \
+  --seed "$TRAIN_SEED" \
+  --logging_steps "$TRAIN_LOGGING_STEPS" \
   "${VALID_ARGS[@]}"

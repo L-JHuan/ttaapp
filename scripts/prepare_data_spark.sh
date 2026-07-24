@@ -16,6 +16,9 @@ SPARK_DRIVER_MEMORY=${SPARK_DRIVER_MEMORY:-8g}
 INDUSTRIAL_TIMEZONE_OFFSET_MINUTES=${INDUSTRIAL_TIMEZONE_OFFSET_MINUTES:-480}
 N_COARSE_REGIONS=${N_COARSE_REGIONS:-64}
 N_FINE_REGIONS=${N_FINE_REGIONS:-256}
+MAX_SEQUENCE_LENGTH=${MAX_SEQUENCE_LENGTH:-50}
+MIN_HISTORY_LENGTH=${MIN_HISTORY_LENGTH:-1}
+KEEP_LAST_K_TRAIN=${KEEP_LAST_K_TRAIN:-5}
 SID_CSV="$RUN_ROOT/codebook/tap_sid.csv"
 
 mkdir -p "$RUN_ROOT/codebook" "$RUN_ROOT/data"
@@ -35,8 +38,9 @@ fi
   --output_dir "$PROCESSED_ROOT" \
   --train_end "$TRAIN_END" \
   --timezone_offset_minutes "$INDUSTRIAL_TIMEZONE_OFFSET_MINUTES" \
-  --max_sequence_length 50 \
-  --keep_last_k_train 5 \
+  --max_sequence_length "$MAX_SEQUENCE_LENGTH" \
+  --min_history_length "$MIN_HISTORY_LENGTH" \
+  --keep_last_k_train "$KEEP_LAST_K_TRAIN" \
   --shuffle_partitions "$SPARK_SHUFFLE_PARTITIONS" \
   --output_partitions "$SPARK_OUTPUT_PARTITIONS" \
   --mapping_partitions "$SPARK_MAPPING_PARTITIONS"
