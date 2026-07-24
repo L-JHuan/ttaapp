@@ -87,6 +87,16 @@ bash scripts/train.sh
 bash scripts/evaluate.sh
 ```
 
+For industrial inputs at hundreds of millions of rows, use the Spark preparation
+entry instead:
+
+```bash
+bash scripts/prepare_data_spark.sh
+```
+
+It reads JSONL directly, keeps each user's trajectory together during distributed
+processing, and writes partitioned Parquet/JSONL data rather than event-level CSV.
+
 Run the stages in this order. Each stage validates its required inputs and
 writes to `PROCESSED_ROOT` or `RUN_ROOT`; generated data, checkpoints, logs, and
 predictions are excluded from Git.

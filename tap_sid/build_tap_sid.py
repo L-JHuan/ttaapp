@@ -12,6 +12,40 @@ import pandas as pd
 from sklearn.cluster import KMeans
 
 
+def read_csv_source(path: Path) -> pd.DataFrame:
+    """Read one CSV file or a Spark CSV output directory."""
+    if path.is_file():
+        return pd.read_csv(path)
+    if not path.is_dir():
+        raise FileNotFoundError(path)
+    files = sorted(
+        item
+        for item in path.rglob("*.csv")
+        if item.is_file() and not item.name.startswith(("_", "."))
+    )
+    if not files:
+        raise ValueError(f"{path} 不包含 CSV 数据分片")
+    return pd.concat((pd.read_csv(item) for item in files), ignore_index=True)
+
+
+def read_catalog_parquet(path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """通过 Spark 读取 POI 级 Parquet，避免生成中间 CSV。"""
+    try:
+        from pyspark.sql import SparkSession
+    except ImportError as exc:
+        raise RuntimeError("读取 --catalog_parquet 需要在 PySpark 环境中运行") from exc
+
+    spark = SparkSession.builder.appName("TAP-SID codebook builder").getOrCreate()
+    catalog = (
+        spark.read.parquet(str(path))
+        .select("pid", "latitude", "longitude", "l1_label", "l2_label")
+        .toPandas()
+    )
+    poi = catalog[["pid", "latitude", "longitude"]].copy()
+    role = catalog[["pid", "l1_label", "l2_label"]].copy()
+    return poi, role
+
+
 def find_column(df: pd.DataFrame, candidates: list[str]) -> str:
     lower = {c.lower(): c for c in df.columns}
     for name in candidates:
@@ -125,8 +159,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Build TAP-SID SID: coarse region a + fine region b + label c/d + leaf e."
     )
-    parser.add_argument("--poi_info", type=Path, required=True)
-    parser.add_argument("--role_priors", type=Path, required=True)
+    parser.add_argument("--poi_info", type=Path)
+    parser.add_argument("--role_priors", type=Path)
+    parser.add_argument(
+        "--catalog_parquet",
+        type=Path,
+        help="Spark 预处理生成的 POI 级目录 Parquet；使用时无需 poi_info/role_priors CSV",
+    )
     parser.add_argument("--output_csv", type=Path, required=True)
     parser.add_argument("--report_json", type=Path, required=True)
     parser.add_argument("--n_coarse_regions", type=int, default=64)
@@ -134,7 +173,16 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=2024)
     args = parser.parse_args()
 
-    poi = pd.read_csv(args.poi_info)
+    if args.catalog_parquet is not None:
+        if args.poi_info is not None or args.role_priors is not None:
+            parser.error("--catalog_parquet 不能与 --poi_info/--role_priors 同时使用")
+        poi, role = read_catalog_parquet(args.catalog_parquet)
+    else:
+        if args.poi_info is None or args.role_priors is None:
+            parser.error("必须提供 --catalog_parquet，或同时提供 --poi_info 和 --role_priors")
+        poi = read_csv_source(args.poi_info)
+        role = read_csv_source(args.role_priors)
+
     pid_col = find_column(poi, ["pid", "PoiId", "poi_id"])
     lat_col = find_column(poi, ["latitude", "Latitude", "lat"])
     lon_col = find_column(poi, ["longitude", "Longitude", "lon", "lng"])
@@ -142,7 +190,6 @@ def main() -> None:
     poi["pid"] = poi["pid"].astype(int)
     poi = poi.sort_values("pid").reset_index(drop=True)
 
-    role = pd.read_csv(args.role_priors)
     role_pid_col = find_column(role, ["pid", "PoiId", "poi_id"])
     role = role.rename(columns={role_pid_col: "pid"}).copy()
     for col in ["l1_label", "l2_label"]:
@@ -156,7 +203,7 @@ def main() -> None:
     df = poi.merge(role, on="pid", how="inner")
     if len(df) != len(poi):
         missing = sorted(set(poi["pid"]) - set(df["pid"]))
-        raise ValueError(f"role_priors missing {len(missing)} POIs, examples={missing[:10]}")
+        raise ValueError(f"POI 类别元数据缺少 {len(missing)} 个 POI, examples={missing[:10]}")
 
     coarse_ids, fine_ids, coord_feat = build_coarse_fine_region_codes(
         df,
@@ -224,8 +271,11 @@ def main() -> None:
     e_nonzero = int((df["e_id"] != 0).sum())
     report = {
         "name": "tap_sid_coarse_fine_region_sid",
-        "poi_info": str(args.poi_info),
-        "role_priors": str(args.role_priors),
+        "poi_info": str(args.poi_info) if args.poi_info is not None else None,
+        "role_priors": str(args.role_priors) if args.role_priors is not None else None,
+        "catalog_parquet": (
+            str(args.catalog_parquet) if args.catalog_parquet is not None else None
+        ),
         "output_csv": str(args.output_csv),
         "num_pois": int(len(df)),
         "n_coarse_regions": int(args.n_coarse_regions),

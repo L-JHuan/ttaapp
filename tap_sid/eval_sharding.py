@@ -7,16 +7,15 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from tap_sid.json_records import iter_json_records, load_json_records
+
 
 SID_PATTERN = re.compile(r"<[a-z]_\d+>")
 SAMPLE_INDEX_KEY = "_tap_sample_index"
 
 
 def read_json_list(path: Path) -> list[dict[str, Any]]:
-    rows = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
-        raise ValueError(f"{path} 必须是 JSON 对象列表")
-    return rows
+    return load_json_records(path)
 
 
 def canonical_sid(value: Any) -> str:
@@ -42,24 +41,36 @@ def split_rows(rows: list[dict[str, Any]], num_shards: int) -> list[list[dict[st
 
 
 def write_shards(dataset: Path, output_dir: Path, num_shards: int) -> dict[str, Any]:
-    rows = read_json_list(dataset)
-    shards = split_rows(rows, num_shards)
+    if num_shards <= 0:
+        raise ValueError("num_shards 必须大于 0")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    shard_files: list[str] = []
-    shard_samples: list[int] = []
-    for shard_index, shard_rows in enumerate(shards):
-        path = output_dir / f"dataset_{shard_index:05d}.json"
-        path.write_text(json.dumps(shard_rows, ensure_ascii=False), encoding="utf-8")
-        shard_files.append(str(path))
-        shard_samples.append(len(shard_rows))
+    paths = [output_dir / f"dataset_{index:05d}.json" for index in range(num_shards)]
+    handles = [path.open("w", encoding="utf-8") for path in paths]
+    shard_samples = [0] * num_shards
+    samples = 0
+    try:
+        for sample_index, row in enumerate(iter_json_records(dataset)):
+            shard_index = sample_index % num_shards
+            item = dict(row)
+            item[SAMPLE_INDEX_KEY] = sample_index
+            handles[shard_index].write(json.dumps(item, ensure_ascii=False) + "\n")
+            shard_samples[shard_index] += 1
+            samples += 1
+    finally:
+        for handle in handles:
+            handle.close()
+    if samples == 0:
+        raise ValueError("测试集不能为空")
+    if num_shards > samples:
+        raise ValueError(f"GPU/分片数 {num_shards} 不能超过测试样本数 {samples}")
 
     manifest = {
         "dataset": str(dataset),
-        "samples": len(rows),
+        "samples": samples,
         "num_shards": num_shards,
         "shard_samples": shard_samples,
-        "shard_files": shard_files,
+        "shard_files": [str(path) for path in paths],
     }
     (output_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),

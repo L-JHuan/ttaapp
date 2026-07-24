@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tap_sid.eval_sharding import merge_shards, split_rows
+from tap_sid.eval_sharding import merge_shards, read_json_list, split_rows, write_shards
 
 
 def sid(value: int) -> str:
@@ -11,6 +11,25 @@ def sid(value: int) -> str:
 
 
 class EvalShardingTest(unittest.TestCase):
+    def test_write_shards_streams_spark_json_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset = root / "dataset"
+            output = root / "shards"
+            dataset.mkdir()
+            (dataset / "part-00000.json").write_text(
+                "\n".join(json.dumps({"output": sid(index)}) for index in range(5)) + "\n",
+                encoding="utf-8",
+            )
+            manifest = write_shards(dataset, output, 2)
+            first = read_json_list(output / "dataset_00000.json")
+            second = read_json_list(output / "dataset_00001.json")
+
+        self.assertEqual(manifest["samples"], 5)
+        self.assertEqual(manifest["shard_samples"], [3, 2])
+        self.assertEqual([row["_tap_sample_index"] for row in first], [0, 2, 4])
+        self.assertEqual([row["_tap_sample_index"] for row in second], [1, 3])
+
     def test_split_rows_covers_each_sample_once(self) -> None:
         rows = [{"output": sid(index)} for index in range(7)]
         shards = split_rows(rows, 3)

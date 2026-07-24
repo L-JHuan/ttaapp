@@ -35,6 +35,8 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from tap_sid.json_records import load_json_records
+
 
 SID_PATTERN = re.compile(r"<[a-z]_\d+>")
 EVENT_PATTERN = re.compile(
@@ -88,10 +90,7 @@ def format_prompt(row: dict[str, Any]) -> str:
 
 
 def load_rows(path: Path, limit: int = 0) -> list[dict[str, Any]]:
-    rows = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(rows, list):
-        raise ValueError(f"{path} must be a JSON list")
-    rows = rows[:limit] if limit > 0 else rows
+    rows = load_json_records(path, limit=limit)
     for index, row in enumerate(rows):
         missing = [key for key in ("instruction", "input", "output") if key not in row]
         if missing:

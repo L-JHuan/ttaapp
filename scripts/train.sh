@@ -8,6 +8,14 @@ NPROC_PER_NODE=${NPROC_PER_NODE:-1}
 CHECKPOINT_DIR="$RUN_ROOT/checkpoint"
 mkdir -p "$CHECKPOINT_DIR"
 VALID_ARGS=()
+TRAIN_DATASET=${TRAIN_DATASET:-"$RUN_ROOT/data/llm_train.json"}
+if [[ ! -e "$TRAIN_DATASET" && -d "$RUN_ROOT/data/llm_train.jsonl" ]]; then
+  TRAIN_DATASET="$RUN_ROOT/data/llm_train.jsonl"
+fi
+if [[ ! -e "$TRAIN_DATASET" ]]; then
+  echo "Training dataset not found: $TRAIN_DATASET" >&2
+  exit 2
+fi
 
 if [[ -f "$RUN_ROOT/data/llm_val.json" ]]; then
   VALID_ARGS+=(--valid_dataset "$RUN_ROOT/data/llm_val.json")
@@ -16,7 +24,7 @@ fi
 TQDM_MININTERVAL=60 TQDM_MINITERS=50 \
 torchrun --standalone --nproc_per_node="$NPROC_PER_NODE" -m tap_sid.train_tap_sid \
   --base_model "$BASE_MODEL" \
-  --train_dataset "$RUN_ROOT/data/llm_train.json" \
+  --train_dataset "$TRAIN_DATASET" \
   --output_dir "$CHECKPOINT_DIR" \
   --batch_size 1 \
   --eval_batch_size 1 \

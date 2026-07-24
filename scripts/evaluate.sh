@@ -6,6 +6,14 @@ set -euo pipefail
 
 EVAL_DIR="$RUN_ROOT/eval"
 mkdir -p "$EVAL_DIR"
+TEST_DATASET=${TEST_DATASET:-"$RUN_ROOT/data/llm_test.json"}
+if [[ ! -e "$TEST_DATASET" && -d "$RUN_ROOT/data/llm_test.jsonl" ]]; then
+  TEST_DATASET="$RUN_ROOT/data/llm_test.jsonl"
+fi
+if [[ ! -e "$TEST_DATASET" ]]; then
+  echo "Test dataset not found: $TEST_DATASET" >&2
+  exit 2
+fi
 
 EVAL_GPUS=${EVAL_GPUS:-}
 if [[ -z "$EVAL_GPUS" ]]; then
@@ -57,7 +65,7 @@ if [[ "${EVAL_NO_CACHE:-0}" == "1" ]]; then
 fi
 
 python -m tap_sid.split_eval_shards \
-  --dataset "$RUN_ROOT/data/llm_test.json" \
+  --dataset "$TEST_DATASET" \
   --output_dir "$SHARD_DIR" \
   --num_shards "$NUM_SHARDS"
 
@@ -103,7 +111,7 @@ if [[ "$FAILED" -ne 0 ]]; then
 fi
 
 python -m tap_sid.merge_eval_shards \
-  --dataset "$RUN_ROOT/data/llm_test.json" \
+  --dataset "$TEST_DATASET" \
   --shard_dir "$SHARD_DIR" \
   --num_shards "$NUM_SHARDS" \
   --output_predictions "$EVAL_DIR/test_predictions.json" \

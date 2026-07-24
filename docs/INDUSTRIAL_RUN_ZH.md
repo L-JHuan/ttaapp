@@ -131,6 +131,69 @@ $RUN_ROOT/
 4. `tap_sid_report.json` 中完整 SID 无碰撞；
 5. `llm_train.json` 与 `llm_test.json` 可解析。
 
+### 5.1 五亿行级 Spark 入口
+
+当原始行为达到数亿行时，不应使用上述单机 Pandas 入口。配置可用 Spark 集群后运行：
+
+```bash
+bash scripts/prepare_data_spark.sh > prepare_spark.log 2>&1
+```
+
+该入口直接读取一个 JSONL 文件、文件通配符或目录，并在 Spark 内完成：
+
+```text
+字段解析与校验
+  -> 按 user_id 重新分区
+  -> 精确事件去重
+  -> 训练期可见用户与 POI 过滤
+  -> 用户内时间排序
+  -> 连续相同 POI 状态合并
+  -> 最近 50 个状态的滚动窗口
+  -> 每用户最后 5 个训练目标
+  -> 分片 SFT JSONL
+```
+
+同一用户的事件在排序、状态合并和窗口构造时始终进入同一逻辑分区，不会因输入文件切片
+而截断轨迹。重数据阶段不生成 `events.csv`、轨迹 CSV 或单个超大 JSON 文件。事件、POI
+目录和序列中间结果均使用分片 Parquet，SFT 数据使用 Spark JSON Lines 目录。Spark 只将
+一行一个 POI 的目录元数据收集到 driver 端构造最终 TAP-SID 码本；最终
+`tap_sid.csv` 的规模由训练期可见 POI 数决定，不随行为总行数增长。
+
+常用 Spark 配置：
+
+```bash
+SPARK_MASTER=yarn
+SPARK_DRIVER_MEMORY=8g
+SPARK_SHUFFLE_PARTITIONS=2000
+SPARK_OUTPUT_PARTITIONS=256
+SPARK_MAPPING_PARTITIONS=256
+SPARK_SUBMIT_OPTIONS="--num-executors 20 --executor-cores 8 --executor-memory 24g"
+```
+
+这些数值只是启动模板，应根据集群 CPU、内存、磁盘吞吐和 Spark 部署模式调整。对于
+单机 Spark，可令 `SPARK_MASTER=local[*]`。正式运行前应先用原始数据的一个小分片执行
+端到端 smoke，再运行全量输入。
+
+Spark 输出为：
+
+```text
+$PROCESSED_ROOT/
+  _spark_stages/                  # 可复用的 Parquet 阶段结果
+  mappings/                       # 用户、POI、类别内部映射
+  metadata/catalog/               # POI 级 Parquet
+  sequence_parquet/train/         # last-5 训练序列
+  sequence_parquet/test/          # 滚动测试序列
+  spark_protocol_report.json
+
+$RUN_ROOT/
+  codebook/tap_sid.csv
+  data/llm_train.jsonl/           # Spark JSONL 分片目录
+  data/llm_test.jsonl/            # Spark JSONL 分片目录
+```
+
+后续 `scripts/train.sh` 和 `scripts/evaluate.sh` 会自动识别这些 JSONL 目录，训练和评估
+命令不变。Spark/PySpark 由业务集群提供，不要求通过本项目 `requirements.txt` 安装。
+
 ## 6. 训练
 
 双卡训练：

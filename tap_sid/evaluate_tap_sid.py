@@ -25,13 +25,11 @@ from tap_sid.catalog_trie import (  # noqa: E402
     sid_atoms,
     load_model,
 )
+from tap_sid.json_records import load_json_records  # noqa: E402
 
 
 def read_json(path: Path, limit: int = 0) -> list[dict[str, Any]]:
-    rows = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(rows, list):
-        raise ValueError(f"{path} is not a JSON list")
-    return rows[:limit] if limit > 0 else rows
+    return load_json_records(path, limit=limit)
 
 
 def dedupe_topk(values: list[str], k: int) -> list[str]:
