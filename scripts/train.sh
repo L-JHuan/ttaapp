@@ -29,11 +29,16 @@ if [[ ! -e "$TRAIN_DATASET" ]]; then
 fi
 
 VALID_DATASET=${VALID_DATASET:-"$RUN_ROOT/data/llm_val.json"}
+NO_VALIDATION=${NO_VALIDATION:-0}
 if [[ ! -e "$VALID_DATASET" && -d "$RUN_ROOT/data/llm_val.jsonl" ]]; then
   VALID_DATASET="$RUN_ROOT/data/llm_val.jsonl"
 fi
 if [[ -e "$VALID_DATASET" ]]; then
   VALID_ARGS+=(--valid_dataset "$VALID_DATASET" --eval_during_train)
+elif [[ "$NO_VALIDATION" != "1" ]]; then
+  echo "Validation dataset not found: $VALID_DATASET" >&2
+  echo "Run data preparation with VALIDATION_END, or explicitly set NO_VALIDATION=1." >&2
+  exit 2
 fi
 
 TQDM_MININTERVAL=60 TQDM_MINITERS=50 \
