@@ -1,0 +1,10 @@
+configs/local.env
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+outputs/
+*.log
+__pycache__/
+.pytest_cache/
+*.pyc

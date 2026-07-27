@@ -1,0 +1,2 @@
+# PySpark should match the Spark cluster's major/minor version.
+pyspark>=3.3,<4

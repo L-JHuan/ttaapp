@@ -1,0 +1,10 @@
+torch==2.11.0
+transformers==4.46.3
+peft==0.19.1
+accelerate==1.13.0
+numpy==2.2.6
+pandas==2.3.3
+scikit-learn==1.7.2
+sentence-transformers==5.4.1
+tqdm==4.67.3
+safetensors==0.7.0

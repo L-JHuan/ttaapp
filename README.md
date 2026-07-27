@@ -26,6 +26,8 @@ docs/
   QUICKSTART_ZH.md
   DATA_REQUIREMENTS_ZH.md
   DATA_PROTOCOL_ZH.md
+baselines/
+  gnpr_industrial/           # matched residual-quantization SID baseline
 ```
 
 ## Input
@@ -110,3 +112,27 @@ The training script defaults to one process. To use multiple GPUs, set
 the quick-start guide for configuration examples and expected outputs.
 
 Generated data, checkpoints, logs, and predictions are excluded by `.gitignore`.
+
+## Matched GNPR Baseline
+
+The industrial GNPR residual-SID baseline is provided under
+[`baselines/gnpr_industrial`](baselines/gnpr_industrial). It reuses the exact
+TAP preprocessing output, time boundaries, histories, train/validation/test
+targets, Llama backbone, LoRA settings, and evaluation protocol. Only the POI
+identifier construction is replaced by GNPR's residual-quantization codebook.
+
+Run it after TAP preprocessing:
+
+```bash
+cd baselines/gnpr_industrial
+cp configs/industrial.example.env configs/local.env
+# Set CATEGORY_MODEL and other machine-specific paths.
+set -a
+source configs/local.env
+set +a
+export PYTHONPATH=$PWD
+
+bash scripts/build_codebook.sh
+bash scripts/train.sh
+bash scripts/evaluate.sh
+```
