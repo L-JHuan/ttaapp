@@ -28,6 +28,8 @@ docs/
   DATA_PROTOCOL_ZH.md
 baselines/
   gnpr_industrial/           # matched residual-quantization SID baseline
+industrial_city_r5_delivery/
+  README_ZH.md               # city-level R@5 analysis and plotting
 ```
 
 ## Input
@@ -92,6 +94,20 @@ bash scripts/prepare_data.sh
 bash scripts/train.sh
 bash scripts/evaluate.sh
 ```
+
+## City-level R@5 Analysis
+
+After both TAP-SID and the matched Residual SID baseline have produced their
+formal test predictions, use
+[`industrial_city_r5_delivery`](industrial_city_r5_delivery) to aggregate
+R@5 by the target POI's city and plot the relative improvements for the eight
+cities with the largest test sets. The analysis reuses the standard `RUN_ROOT`
+and `PROCESSED_ROOT` layouts and performs strict sample, target, and metric
+alignment checks before plotting.
+
+See
+[`industrial_city_r5_delivery/README_ZH.md`](industrial_city_r5_delivery/README_ZH.md)
+for the required `local.env` entries and the one-command workflow.
 
 For industrial inputs at hundreds of millions of rows, use the Spark preparation
 entry instead:
