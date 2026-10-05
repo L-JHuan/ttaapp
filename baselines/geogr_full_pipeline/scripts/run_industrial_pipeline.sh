@@ -97,7 +97,7 @@ gpu_is_free() {
   (( memory <= GPU_MEMORY_THRESHOLD_MIB && utilization <= GPU_UTIL_THRESHOLD ))
 }
 wait_for_gpus() {
-  [[ "$WAIT_FOR_GPUS" == "1" ]] || return
+  [[ "$WAIT_FOR_GPUS" == "1" ]] || return 0
   log "Every ${WAIT_SECONDS}s check GPU ${GPU_IDS[*]}."
   while true; do
     local all_free=1

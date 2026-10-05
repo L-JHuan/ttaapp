@@ -58,6 +58,10 @@ class IndustrialPipelineScriptTest(unittest.TestCase):
         self.assertIn('configs/local.env', script)
         self.assertIn('configs/industrial.example.env', script)
 
+    def test_disabled_gpu_wait_returns_success_under_set_e(self) -> None:
+        script = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('[[ "$WAIT_FOR_GPUS" == "1" ]] || return 0', script)
+
 
 if __name__ == "__main__":
     unittest.main()
