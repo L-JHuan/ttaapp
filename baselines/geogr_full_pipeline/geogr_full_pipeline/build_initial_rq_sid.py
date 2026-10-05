@@ -7,8 +7,8 @@ import csv
 from collections import Counter
 from pathlib import Path
 
-from baselines.geogr.geogr.build_geogr_sid import residual_kmeans, sid_tokens
 from geogr_full_pipeline.common import load_embeddings, write_json
+from geogr_full_pipeline.sid_utils import residual_kmeans, sid_tokens
 
 
 def write_initial_codebook(path: Path, pids: list[int], code_rows) -> None:

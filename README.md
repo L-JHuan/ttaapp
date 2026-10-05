@@ -28,9 +28,7 @@ docs/
   DATA_PROTOCOL_ZH.md
 baselines/
   gnpr_industrial/           # matched residual-quantization SID baseline
-  spacetime_gr/              # 5 km block -> inner-POI identifier adaptation
-  geogr/                     # geo-collaborative RQ-Kmeans SID adaptation
-  geogr_full_pipeline/       # matched GeoGR EM/CPT/SFT pipeline adaptation
+  geogr_full_pipeline/       # complete GeoGR P2P/RQ/EM/CPT/SFT baseline
 industrial_city_r5_delivery/
   README_ZH.md               # city-level R@5 analysis and plotting
 ```
@@ -156,17 +154,21 @@ bash scripts/train.sh
 bash scripts/evaluate.sh
 ```
 
-## Geographic Hierarchical Baselines
+## Complete GeoGR Baseline
 
-Paper-guided, current-protocol adaptations of Spacetime-GR and GeoGR are
-provided under [`baselines/spacetime_gr`](baselines/spacetime_gr) and
-[`baselines/geogr`](baselines/geogr). The extended GeoGR workflow, including
-EM-style SID refinement and matched CPT/SFT variants, is provided under
-[`baselines/geogr_full_pipeline`](baselines/geogr_full_pipeline). These are
-paper-guided matched adaptations rather than official author code. They reuse
-the exact TAP-SID chronological samples and downstream generator to support a
-controlled identifier comparison.
+The second industrial baseline is provided under
+[`baselines/geogr_full_pipeline`](baselines/geogr_full_pipeline). It implements
+the paper-guided P2P, three-level RQ, EM-style SID refinement, CPT, SFT, and
+catalog-constrained evaluation workflow. Its industrial entry reuses the exact
+TAP-SID Spark/CSV preprocessing output and supports the train/test-only protocol
+used in the handoff:
 
-See [`baselines/COMPARISON_PROTOCOL.md`](baselines/COMPARISON_PROTOCOL.md) for
-the reproducibility boundary, required alignment checks, and result aggregation
-command.
+```bash
+cd baselines/geogr_full_pipeline
+cp configs/industrial.example.env configs/industrial.local.env
+bash scripts/run_industrial_pipeline.sh "$PWD/configs/industrial.local.env"
+```
+
+This repository therefore exposes exactly three industrial methods: TAP-SID,
+Residual SID, and GeoGR full. Other public-benchmark identifier adaptations are
+maintained in the separate TAP-SID open-source repository.

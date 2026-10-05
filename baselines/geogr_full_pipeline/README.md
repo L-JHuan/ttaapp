@@ -36,3 +36,42 @@ bash baselines/geogr_full_pipeline/scripts/run_matched_pipeline.sh /absolute/pat
 ```
 
 脚本支持从已经验收的阶段继续，但不会覆盖已有的不完整正式输出。各训练、候选生成和评估阶段使用独立日志。
+
+## 工业数据一键运行
+
+工业版本只复用 TAP-SID 已完成的共享预处理，不重新扫描原始行为日志，也不重新构造用户、POI、时间切分、last-5 训练样本或滚动测试样本。它同时支持：
+
+- Spark 产物：`metadata/catalog`、`mappings/` 与 `sequence_parquet/`；
+- CSV 产物：`poi_info.csv`、`role_priors.csv` 与 `v1_sequence/`。
+
+复制配置模板并填写真实路径：
+
+```bash
+cd baselines/geogr_full_pipeline
+cp configs/industrial.example.env configs/industrial.local.env
+# 修改 PROCESSED_ROOT、RUN_ROOT、BASE_MODEL 和 GPU 列表
+bash scripts/run_industrial_pipeline.sh "$PWD/configs/industrial.local.env"
+```
+
+工业入口默认使用与 TAP-SID 相同的四卡 Llama-3-8B、last-5 训练、无验证集和全量滚动测试协议。`EM_BEAMS=20` 仅用于 GeoGR 内部 SID 更新；正式推荐评估固定使用 `TEST_BEAMS=10`。
+
+完整流水线依次执行：
+
+```text
+共享 TAP 预处理
+  -> 地理约束共访对与 P2P 表示学习
+  -> 三层初始 RQ SID
+  -> EM-style SID 更新
+  -> GeoGR 多模板 CPT
+  -> SFT-only 与 CPT->SFT
+  -> 目录约束 beam-10 测试
+```
+
+最终结果分别位于：
+
+```text
+RUN_ROOT/sft_only/eval/test_predictions.json
+RUN_ROOT/sft_only/eval/test_metrics.json
+RUN_ROOT/cpt_sft/eval/test_predictions.json
+RUN_ROOT/cpt_sft/eval/test_metrics.json
+```

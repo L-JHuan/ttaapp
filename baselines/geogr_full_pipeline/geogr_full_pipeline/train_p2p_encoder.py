@@ -18,7 +18,7 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
-from baselines.geogr.geogr.build_geogr_sid import (
+from geogr_full_pipeline.sid_utils import (
     GeoPair,
     build_geo_constrained_pairs,
     load_train_user_items,

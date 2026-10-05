@@ -8,6 +8,10 @@ EVALUATE_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "evaluate.sh
 
 
 class RunMatchedPipelineScriptTest(unittest.TestCase):
+    def test_full_pipeline_has_no_identifier_only_runtime_dependency(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("$REPO_ROOT/baselines/geogr:", text)
+
     def test_evaluation_uses_pipeline_level_test_dataset(self):
         text = SCRIPT.read_text(encoding="utf-8")
         block = re.search(

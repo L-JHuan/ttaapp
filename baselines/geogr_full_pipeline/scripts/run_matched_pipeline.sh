@@ -50,7 +50,7 @@ done
 
 mkdir -p "$RUN_ROOT/logs" "$RUN_ROOT/sid" "$RUN_ROOT/em" "$RUN_ROOT/data"
 cd "$REPO_ROOT"
-export PYTHONPATH="$REPO_ROOT/baselines/geogr_full_pipeline:$REPO_ROOT/baselines/geogr:$REPO_ROOT"
+export PYTHONPATH="$REPO_ROOT/baselines/geogr_full_pipeline:$REPO_ROOT"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TQDM_MININTERVAL=60
 export TQDM_MINITERS=50

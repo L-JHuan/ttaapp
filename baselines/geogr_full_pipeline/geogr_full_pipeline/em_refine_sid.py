@@ -18,9 +18,9 @@ from peft import PeftModel
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from baselines.geogr.geogr.build_geogr_sid import sid_tokens
 from geogr_full_pipeline.build_em_data import EM_INSTRUCTION
 from geogr_full_pipeline.common import load_public_catalog, public_poi_description, write_json
+from geogr_full_pipeline.sid_utils import sid_tokens
 
 
 SID_PATTERN = re.compile(r"<a_(\d+)><b_(\d+)><c_(\d+)>")

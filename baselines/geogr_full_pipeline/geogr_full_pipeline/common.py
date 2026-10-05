@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from baselines.geogr.geogr.build_geogr_sid import CatalogPoi, load_catalog
+from geogr_full_pipeline.sid_utils import CatalogPoi, load_catalog
 
 
 GEOHASH_ALPHABET = "0123456789bcdefghjkmnpqrstuvwxyz"

@@ -10,13 +10,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from baselines.geogr.geogr.build_geogr_sid import sid_tokens
 from geogr_full_pipeline.build_em_data import load_codes
 from geogr_full_pipeline.common import (
     load_public_catalog,
     public_poi_description,
     write_json,
 )
+from geogr_full_pipeline.sid_utils import sid_tokens
 
 
 def format_trajectory(

@@ -5,7 +5,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from baselines.geogr.geogr.build_geogr_sid import CatalogPoi
 from geogr_full_pipeline.build_initial_rq_sid import write_initial_codebook
 from geogr_full_pipeline.common import (
     encode_geohash,
@@ -13,6 +12,7 @@ from geogr_full_pipeline.common import (
     public_poi_description,
     save_embeddings,
 )
+from geogr_full_pipeline.sid_utils import CatalogPoi
 
 
 class CommonAndRqTest(unittest.TestCase):

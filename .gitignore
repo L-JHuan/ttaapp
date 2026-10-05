@@ -8,5 +8,6 @@ checkpoints/*
 reports/*
 *.log
 configs/local.env
+**/*.local.env
 !data/raw/.gitkeep
 !data/processed/.gitkeep
