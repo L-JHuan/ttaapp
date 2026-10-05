@@ -28,6 +28,9 @@ docs/
   DATA_PROTOCOL_ZH.md
 baselines/
   gnpr_industrial/           # matched residual-quantization SID baseline
+  spacetime_gr/              # 5 km block -> inner-POI identifier adaptation
+  geogr/                     # geo-collaborative RQ-Kmeans SID adaptation
+  geogr_full_pipeline/       # matched GeoGR EM/CPT/SFT pipeline adaptation
 industrial_city_r5_delivery/
   README_ZH.md               # city-level R@5 analysis and plotting
 ```
@@ -152,3 +155,18 @@ bash scripts/build_codebook.sh
 bash scripts/train.sh
 bash scripts/evaluate.sh
 ```
+
+## Geographic Hierarchical Baselines
+
+Paper-guided, current-protocol adaptations of Spacetime-GR and GeoGR are
+provided under [`baselines/spacetime_gr`](baselines/spacetime_gr) and
+[`baselines/geogr`](baselines/geogr). The extended GeoGR workflow, including
+EM-style SID refinement and matched CPT/SFT variants, is provided under
+[`baselines/geogr_full_pipeline`](baselines/geogr_full_pipeline). These are
+paper-guided matched adaptations rather than official author code. They reuse
+the exact TAP-SID chronological samples and downstream generator to support a
+controlled identifier comparison.
+
+See [`baselines/COMPARISON_PROTOCOL.md`](baselines/COMPARISON_PROTOCOL.md) for
+the reproducibility boundary, required alignment checks, and result aggregation
+command.

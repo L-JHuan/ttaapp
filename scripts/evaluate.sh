@@ -4,14 +4,20 @@ set -euo pipefail
 : "${BASE_MODEL:?Set BASE_MODEL}"
 : "${RUN_ROOT:?Set RUN_ROOT}"
 
+PYTHON_BIN=${PYTHON_BIN:-python}
 EVAL_DIR="$RUN_ROOT/eval"
 mkdir -p "$EVAL_DIR"
+SEMANTIC_CODES=${SEMANTIC_CODES:-"$RUN_ROOT/codebook/tap_sid.csv"}
 TEST_DATASET=${TEST_DATASET:-"$RUN_ROOT/data/llm_test.json"}
 if [[ ! -e "$TEST_DATASET" && -d "$RUN_ROOT/data/llm_test.jsonl" ]]; then
   TEST_DATASET="$RUN_ROOT/data/llm_test.jsonl"
 fi
 if [[ ! -e "$TEST_DATASET" ]]; then
   echo "Test dataset not found: $TEST_DATASET" >&2
+  exit 2
+fi
+if [[ ! -f "$SEMANTIC_CODES" ]]; then
+  echo "Semantic codebook not found: $SEMANTIC_CODES" >&2
   exit 2
 fi
 
@@ -64,7 +70,7 @@ if [[ "${EVAL_NO_CACHE:-0}" == "1" ]]; then
   NO_CACHE_ARGS+=(--no_cache)
 fi
 
-python -m tap_sid.split_eval_shards \
+"$PYTHON_BIN" -m tap_sid.split_eval_shards \
   --dataset "$TEST_DATASET" \
   --output_dir "$SHARD_DIR" \
   --num_shards "$NUM_SHARDS"
@@ -76,11 +82,11 @@ for ((shard_index = 0; shard_index < NUM_SHARDS; shard_index++)); do
   shard_log="$SHARD_DIR/logs/shard_${shard_tag}.log"
   echo "Launching shard $shard_index/$NUM_SHARDS on GPU $gpu -> $shard_log"
   CUDA_VISIBLE_DEVICES="$gpu" TQDM_MININTERVAL=60 TQDM_MINITERS=20 \
-    python -m tap_sid.evaluate_tap_sid \
+    "$PYTHON_BIN" -m tap_sid.evaluate_tap_sid \
       --base_model "$BASE_MODEL" \
       --adapter_dir "$RUN_ROOT/checkpoint/final_sft" \
       --dataset "$SHARD_DIR/dataset_${shard_tag}.json" \
-      --semantic_codes "$RUN_ROOT/codebook/tap_sid.csv" \
+      --semantic_codes "$SEMANTIC_CODES" \
       --output_predictions "$SHARD_DIR/predictions_${shard_tag}.json" \
       --output_metrics "$SHARD_DIR/metrics_${shard_tag}.json" \
       --cutoff_len "$EVAL_CUTOFF_LEN" \
@@ -110,7 +116,7 @@ if [[ "$FAILED" -ne 0 ]]; then
   exit 1
 fi
 
-python -m tap_sid.merge_eval_shards \
+"$PYTHON_BIN" -m tap_sid.merge_eval_shards \
   --dataset "$TEST_DATASET" \
   --shard_dir "$SHARD_DIR" \
   --num_shards "$NUM_SHARDS" \
@@ -118,7 +124,7 @@ python -m tap_sid.merge_eval_shards \
   --output_metrics "$EVAL_DIR/test_metrics.json" \
   --k "$EVAL_K"
 
-python -m json.tool "$EVAL_DIR/test_predictions.json" >/dev/null
-python -m json.tool "$EVAL_DIR/test_metrics.json" >/dev/null
+"$PYTHON_BIN" -m json.tool "$EVAL_DIR/test_predictions.json" >/dev/null
+"$PYTHON_BIN" -m json.tool "$EVAL_DIR/test_metrics.json" >/dev/null
 echo "Evaluation completed with $NUM_SHARDS GPU shard(s)."
 echo "Merged metrics: $EVAL_DIR/test_metrics.json"
