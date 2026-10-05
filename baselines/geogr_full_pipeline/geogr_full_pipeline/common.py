@@ -46,7 +46,7 @@ def encode_geohash(latitude: float, longitude: float, precision: int = 7) -> str
 
 
 def public_poi_description(poi: CatalogPoi, geohash_precision: int = 7) -> str:
-    """仅使用公开 NYC/TKY 真实可用字段构造 POI 描述。"""
+    """仅使用当前目录提供的坐标和类别字段构造 POI 描述。"""
     geohash = encode_geohash(poi.latitude, poi.longitude, geohash_precision)
     return (
         f"POI coordinates: latitude {poi.latitude:.6f}, longitude {poi.longitude:.6f}; "

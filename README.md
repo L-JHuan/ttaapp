@@ -165,8 +165,15 @@ used in the handoff:
 
 ```bash
 cd baselines/geogr_full_pipeline
-cp configs/industrial.example.env configs/industrial.local.env
-bash scripts/run_industrial_pipeline.sh "$PWD/configs/industrial.local.env"
+cp configs/industrial.example.env configs/local.env
+# 修改 configs/local.env 中的真实路径后直接运行
+bash scripts/run_industrial_pipeline.sh
+```
+
+如只保留模板文件，也可以直接修改并显式传入：
+
+```bash
+bash scripts/run_industrial_pipeline.sh "$PWD/configs/industrial.example.env"
 ```
 
 This repository therefore exposes exactly three industrial methods: TAP-SID,

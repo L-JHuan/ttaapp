@@ -1,10 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_FILE=${1:?Usage: run_industrial_pipeline.sh /absolute/path/to/geogr_industrial.env}
+SCRIPT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ $# -ge 1 ]]; then
+  ENV_FILE=$1
+elif [[ -f "$SCRIPT_ROOT/configs/local.env" ]]; then
+  ENV_FILE="$SCRIPT_ROOT/configs/local.env"
+elif [[ -f "$SCRIPT_ROOT/configs/industrial.example.env" ]]; then
+  ENV_FILE="$SCRIPT_ROOT/configs/industrial.example.env"
+else
+  echo "Missing configuration: configs/local.env or configs/industrial.example.env" >&2
+  exit 2
+fi
+[[ -f "$ENV_FILE" ]] || { echo "Configuration file missing: $ENV_FILE" >&2; exit 2; }
 source "$ENV_FILE"
 
-SCRIPT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 REPO_ROOT=${REPO_ROOT:-$(cd "$SCRIPT_ROOT/../.." && pwd)}
 required=(PROCESSED_ROOT RUN_ROOT BASE_MODEL CODEBOOK_SIZE GPUS)
 for name in "${required[@]}"; do
@@ -319,9 +329,6 @@ train_sft_variant() {
     >"$RUN_ROOT/logs/$(basename "$variant_root")_train.log" 2>&1
 }
 
-SFT_ONLY_ROOT="$RUN_ROOT/sft_only"
-train_sft_variant "$SFT_ONLY_ROOT"
-
 if [[ ! -s "$RUN_ROOT/cpt/checkpoint/final_cpt/adapter_config.json" ]]; then
   require_new_dir "$RUN_ROOT/cpt/checkpoint"
   CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON_BIN" -m torch.distributed.run \
@@ -347,6 +354,5 @@ evaluate_variant() {
   json_ok "$variant_root/eval/test_metrics.json"
 }
 
-evaluate_variant "$SFT_ONLY_ROOT" "${DATASET}_geogr_em_sft_beam10"
 evaluate_variant "$CPT_SFT_ROOT" "${DATASET}_geogr_em_cpt_sft_beam10"
 log "GeoGR industrial full pipeline completed: $RUN_ROOT"
