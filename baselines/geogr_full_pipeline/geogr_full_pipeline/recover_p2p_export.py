@@ -22,7 +22,7 @@ from geogr_full_pipeline.train_p2p_encoder import (
 
 
 def inspect_saved_adapter(args) -> tuple[dict, dict]:
-    """检查权重完整性；旧版本缺少完成标记时必须显式人工确认。"""
+    """检查权重完整性；缺少完成标记的旧版本仅在入口允许时恢复。"""
     adapter = args.adapter_dir
     for name in ("adapter_config.json", "tokenizer_config.json"):
         if not (adapter / name).is_file():
@@ -61,7 +61,7 @@ def inspect_saved_adapter(args) -> tuple[dict, dict]:
             )
         training = {
             "training_complete": None,
-            "completion_evidence": "operator_confirmed_from_original_training_log",
+            "completion_evidence": "legacy_adapter_allowed_without_training_completion_marker",
             "input_sha256": None,
             "world_size": None,
             "epoch_losses": None,

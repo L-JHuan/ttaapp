@@ -3,6 +3,9 @@
 import tempfile
 import unittest
 import json
+import os
+import re
+import subprocess
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -94,6 +97,10 @@ class P2PExportRecoveryTest(unittest.TestCase):
             args.allow_legacy_adapter = True
             training, weights = recovery.inspect_saved_adapter(args)
             self.assertIsNone(training["global_step"])
+            self.assertEqual(
+                training["completion_evidence"],
+                "legacy_adapter_allowed_without_training_completion_marker",
+            )
             recovery.check_loaded_weights(model, weights)
 
     def test_recovery_rejects_missing_or_corrupt_weights(self):
@@ -145,6 +152,23 @@ class P2PExportRecoveryTest(unittest.TestCase):
         self.assertIn("P2P_RECOVER_LEGACY", script)
         self.assertIn("p2p_export_recovery_", script)
         self.assertIn('trap \'pipeline_failed "$?" "$LINENO"\' ERR', script)
+
+    def test_runner_defaults_to_legacy_recovery_but_allows_disabling(self):
+        """一键入口默认兼容旧权重，显式设为0时仍可禁用。"""
+        path = Path(__file__).resolve().parents[1] / "scripts/run_industrial_pipeline.sh"
+        assignment = re.search(r"^P2P_RECOVER_LEGACY=.*$", path.read_text(), re.MULTILINE)
+        self.assertIsNotNone(assignment)
+        command = assignment.group(0) + '\nprintf "%s" "$P2P_RECOVER_LEGACY"'
+        for override, expected in ((None, "1"), ("0", "0")):
+            env = dict(os.environ)
+            env.pop("P2P_RECOVER_LEGACY", None)
+            if override is not None:
+                env["P2P_RECOVER_LEGACY"] = override
+            result = subprocess.run(
+                ["bash", "-c", command], env=env, check=True,
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.stdout, expected)
 
 
 if __name__ == "__main__":

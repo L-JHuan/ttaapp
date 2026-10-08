@@ -45,6 +45,8 @@ P2P_BATCH_SIZE=${P2P_BATCH_SIZE:-4}
 P2P_GRAD_ACCUM=${P2P_GRAD_ACCUM:-2}
 P2P_EPOCHS=${P2P_EPOCHS:-3}
 P2P_MAX_PAIRS_PER_POI=${P2P_MAX_PAIRS_PER_POI:-50}
+# 默认兼容没有训练完成报告的旧 adapter，仍严格校验权重。
+P2P_RECOVER_LEGACY=${P2P_RECOVER_LEGACY:-1}
 EM_ITERATIONS=${EM_ITERATIONS:-2}
 EM_EPOCHS=${EM_EPOCHS:-2}
 EM_BEAMS=${EM_BEAMS:-20}
@@ -178,8 +180,8 @@ P2P_ROOT="$RUN_ROOT/p2p"
 if [[ ! -s "$P2P_ROOT/p2p_encoder_report.json" || ! -s "$P2P_ROOT/refined_embeddings.npz" ]]; then
   if [[ -s "$P2P_ROOT/encoder_adapter/adapter_config.json" ]]; then
     RECOVERY_ARGS=()
-    if [[ "${P2P_RECOVER_LEGACY:-0}" == "1" ]]; then
-      # 旧版没有完成报告；此开关表示已人工核对原训练日志及输入未变。
+    if [[ "$P2P_RECOVER_LEGACY" == "1" ]]; then
+      # 允许缺少完成报告的旧权重恢复，不代表已验证原训练完成或输入来源。
       RECOVERY_ARGS=(--allow_legacy_adapter)
     fi
     CURRENT_STAGE_LOG="$RUN_ROOT/logs/p2p_export_recovery_$(date '+%Y%m%d_%H%M%S').log"
