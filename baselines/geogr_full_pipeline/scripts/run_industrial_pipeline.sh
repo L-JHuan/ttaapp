@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 SCRIPT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 if [[ $# -ge 1 ]]; then
@@ -79,6 +79,17 @@ export TQDM_MINITERS=${TQDM_MINITERS:-50}
 
 timestamp() { date '+%Y-%m-%d %H:%M:%S %z'; }
 log() { echo "[$(timestamp)] $*"; }
+CURRENT_STAGE_LOG=""
+pipeline_failed() {
+  local status=$1 line=$2
+  echo "GeoGR pipeline failed: exit=$status line=$line; logs=$RUN_ROOT/logs" >&2
+  if [[ -n "$CURRENT_STAGE_LOG" && -f "$CURRENT_STAGE_LOG" ]]; then
+    echo "Stage log: $CURRENT_STAGE_LOG (last 40 lines)" >&2
+    tail -n 40 "$CURRENT_STAGE_LOG" >&2
+  fi
+  exit "$status"
+}
+trap 'pipeline_failed "$?" "$LINENO"' ERR
 json_ok() { "$PYTHON_BIN" -m json.tool "$1" >/dev/null; }
 require_new_dir() {
   local path=$1
@@ -165,20 +176,38 @@ wait_for_gpus
 
 P2P_ROOT="$RUN_ROOT/p2p"
 if [[ ! -s "$P2P_ROOT/p2p_encoder_report.json" || ! -s "$P2P_ROOT/refined_embeddings.npz" ]]; then
-  require_new_dir "$P2P_ROOT"
-  log "P2P: ${GPU_COUNT}-GPU Llama-3-8B LoRA contrastive training."
-  CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON_BIN" -m torch.distributed.run \
-    --standalone --nproc_per_node="$GPU_COUNT" -m geogr_full_pipeline.train_p2p_encoder \
-    --poi_info "$POI_INFO" --role_priors "$ROLE_PRIORS" "${ID_MAPPING_ARGS[@]}" \
-    --train_sequences "$TRAIN_SEQUENCES" --encoder_model "$BASE_MODEL" \
-    --output_dir "$P2P_ROOT" --batch_size "$P2P_BATCH_SIZE" \
-    --grad_accum "$P2P_GRAD_ACCUM" --encode_batch_size 8 --epochs "$P2P_EPOCHS" \
-    --learning_rate "$LEARNING_RATE" --temperature 0.07 \
-    --max_distance_km 3.0 --min_common_users 2 --swing_alpha 1.0 \
-    --max_pairs_per_poi "$P2P_MAX_PAIRS_PER_POI" --seed 2024 \
-    >"$RUN_ROOT/logs/p2p_train.log" 2>&1
+  if [[ -s "$P2P_ROOT/encoder_adapter/adapter_config.json" ]]; then
+    RECOVERY_ARGS=()
+    if [[ "${P2P_RECOVER_LEGACY:-0}" == "1" ]]; then
+      # 旧版没有完成报告；此开关表示已人工核对原训练日志及输入未变。
+      RECOVERY_ARGS=(--allow_legacy_adapter)
+    fi
+    CURRENT_STAGE_LOG="$RUN_ROOT/logs/p2p_export_recovery_$(date '+%Y%m%d_%H%M%S').log"
+    log "Recover P2P embeddings from saved adapter; no retraining. Log: $CURRENT_STAGE_LOG"
+    CUDA_VISIBLE_DEVICES="${GPU_IDS[0]}" "$PYTHON_BIN" -u -m geogr_full_pipeline.recover_p2p_export \
+      --poi_info "$POI_INFO" --role_priors "$ROLE_PRIORS" "${ID_MAPPING_ARGS[@]}" \
+      --train_sequences "$TRAIN_SEQUENCES" --encoder_model "$BASE_MODEL" \
+      --adapter_dir "$P2P_ROOT/encoder_adapter" --output_dir "$P2P_ROOT" \
+      --device cuda:0 --encode_batch_size 8 "${RECOVERY_ARGS[@]}" \
+      >"$CURRENT_STAGE_LOG" 2>&1
+  else
+    require_new_dir "$P2P_ROOT"
+    CURRENT_STAGE_LOG="$RUN_ROOT/logs/p2p_train.log"
+    log "P2P: ${GPU_COUNT}-GPU Llama-3-8B LoRA contrastive training. Log: $CURRENT_STAGE_LOG"
+    CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON_BIN" -u -m torch.distributed.run \
+      --standalone --nproc_per_node="$GPU_COUNT" -m geogr_full_pipeline.train_p2p_encoder \
+      --poi_info "$POI_INFO" --role_priors "$ROLE_PRIORS" "${ID_MAPPING_ARGS[@]}" \
+      --train_sequences "$TRAIN_SEQUENCES" --encoder_model "$BASE_MODEL" \
+      --output_dir "$P2P_ROOT" --batch_size "$P2P_BATCH_SIZE" \
+      --grad_accum "$P2P_GRAD_ACCUM" --encode_batch_size 8 --epochs "$P2P_EPOCHS" \
+      --learning_rate "$LEARNING_RATE" --temperature 0.07 \
+      --max_distance_km 3.0 --min_common_users 2 --swing_alpha 1.0 \
+      --max_pairs_per_poi "$P2P_MAX_PAIRS_PER_POI" --seed 2024 \
+      >"$CURRENT_STAGE_LOG" 2>&1
+  fi
 fi
 json_ok "$P2P_ROOT/p2p_encoder_report.json"
+CURRENT_STAGE_LOG=""
 
 INITIAL_SID="$RUN_ROOT/sid/initial_rq_sid.csv"
 if [[ ! -s "$INITIAL_SID" ]]; then

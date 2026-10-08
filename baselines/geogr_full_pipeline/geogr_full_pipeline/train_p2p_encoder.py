@@ -1,10 +1,12 @@
-"""使用地理约束共访 POI 对对 Qwen3-Embedding-4B 进行 LoRA 对比微调。"""
+"""使用地理约束共访 POI 对进行 LoRA 对比微调，并独立导出目录向量。"""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import random
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -104,6 +106,34 @@ def setup_distributed(device_text: str) -> tuple[torch.device, int, int, bool]:
     return torch.device(device_text), rank, world_size, False
 
 
+def log_stage(message: str) -> None:
+    print(f"[{datetime.now().astimezone().isoformat(timespec='seconds')}] {message}", flush=True)
+
+
+def input_fingerprints(args) -> dict[str, str]:
+    """记录已训练权重对应的输入文件，供恢复导出严格核对。"""
+    result = {}
+    for name in ("poi_info", "role_priors", "id_mappings", "train_sequences"):
+        path = getattr(args, name, None)
+        if path is None:
+            continue
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        result[name] = digest.hexdigest()
+    return result
+
+
+def finish_training_group(model, distributed: bool):
+    """所有进程结束训练通信后再导出，禁止让其他 rank 长时间等待导出。"""
+    unwrapped = getattr(model, "module", model) if distributed else model
+    if distributed:
+        torch.distributed.barrier()
+        torch.distributed.destroy_process_group()
+    return unwrapped
+
+
 @torch.no_grad()
 def encode_catalog(
     model,
@@ -115,7 +145,7 @@ def encode_catalog(
 ) -> np.ndarray:
     model.eval()
     output: list[np.ndarray] = []
-    for start in tqdm(range(0, len(descriptions), batch_size), desc="Encode POIs"):
+    for start in tqdm(range(0, len(descriptions), batch_size), desc="Encode POIs", mininterval=60):
         vectors = encode_batch(
             model,
             tokenizer,
@@ -177,6 +207,8 @@ def main() -> None:
     device, rank, world_size, distributed = setup_distributed(args.device)
 
     try:
+        if rank == 0:
+            log_stage("读取目录、训练序列并构建地理约束共访对（CPU 阶段）。")
         catalog = load_public_catalog(args.poi_info, args.role_priors, args.id_mappings)
         descriptions = {poi.pid: public_poi_description(poi) for poi in catalog}
         coordinates = {poi.pid: (poi.latitude, poi.longitude) for poi in catalog}
@@ -191,6 +223,8 @@ def main() -> None:
         )
         if len(pairs) < 2:
             raise ValueError("地理约束共访正样本对不足")
+        if rank == 0:
+            log_stage(f"共访对构建完成：{len(catalog)} POI，{len(pairs)} 正样本对；开始加载模型。")
 
         tokenizer = AutoTokenizer.from_pretrained(args.encoder_model, trust_remote_code=True)
         if tokenizer.pad_token_id is None:
@@ -284,12 +318,31 @@ def main() -> None:
             if args.max_steps > 0 and global_step >= args.max_steps:
                 break
 
+        unwrapped = finish_training_group(model, distributed)
         if rank == 0:
             args.output_dir.mkdir(parents=True, exist_ok=True)
-            unwrapped = model.module if distributed else model
             adapter_dir = args.output_dir / "encoder_adapter"
             unwrapped.save_pretrained(adapter_dir)
             tokenizer.save_pretrained(adapter_dir)
+            write_json(
+                args.output_dir / "p2p_training_report.json",
+                {
+                    "training_complete": True,
+                    "encoder_model": str(Path(args.encoder_model).resolve()),
+                    "input_sha256": input_fingerprints(args),
+                    "catalog_pois": len(catalog),
+                    "pair_construction": pair_report,
+                    "world_size": world_size,
+                    "global_contrastive_batch": args.batch_size * world_size,
+                    "optimizer_effective_batch": args.batch_size * world_size * args.grad_accum,
+                    "epoch_losses": epoch_losses,
+                    "global_step": global_step,
+                    "max_length": args.max_length,
+                    "encode_limit": args.encode_limit,
+                    "dtype": args.dtype,
+                },
+            )
+            log_stage("P2P 训练及 adapter 保存完成；训练通信组已关闭，开始独立导出目录向量。")
             encoded_catalog = catalog[: args.encode_limit] if args.encode_limit > 0 else catalog
             ordered_descriptions = [descriptions[poi.pid] for poi in encoded_catalog]
             embeddings = encode_catalog(
@@ -344,8 +397,7 @@ def main() -> None:
                     "embedding_path": str(embedding_path),
                 },
             )
-        if distributed:
-            torch.distributed.barrier()
+            log_stage(f"P2P 向量和报告已保存：{embedding_path}")
     finally:
         if distributed and torch.distributed.is_initialized():
             torch.distributed.destroy_process_group()
