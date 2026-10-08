@@ -213,12 +213,18 @@ CURRENT_STAGE_LOG=""
 
 INITIAL_SID="$RUN_ROOT/sid/initial_rq_sid.csv"
 if [[ ! -s "$INITIAL_SID" ]]; then
-  "$PYTHON_BIN" -m geogr_full_pipeline.build_initial_rq_sid \
+  CURRENT_STAGE_LOG="$RUN_ROOT/logs/initial_rq_$(date '+%Y%m%d_%H%M%S').log"
+  log "Initial RQ: CPU BLAS/OpenMP threads=1; reuse saved P2P embeddings. Log: $CURRENT_STAGE_LOG"
+  # 仅限制本次 RQ 子进程，避免 OpenBLAS/OpenMP 线程过多；不影响后续多卡训练。
+  OPENBLAS_NUM_THREADS=1 OPENBLAS_DEFAULT_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 PYTHONFAULTHANDLER=1 \
+    "$PYTHON_BIN" -u -m geogr_full_pipeline.build_initial_rq_sid \
     --embeddings_npz "$P2P_ROOT/refined_embeddings.npz" \
     --output_csv "$INITIAL_SID" --report_json "$RUN_ROOT/sid/initial_rq_report.json" \
-    --codebook_size "$CODEBOOK_SIZE" --seed 2024 >"$RUN_ROOT/logs/initial_rq.log" 2>&1
+    --codebook_size "$CODEBOOK_SIZE" --seed 2024 >"$CURRENT_STAGE_LOG" 2>&1
 fi
 json_ok "$RUN_ROOT/sid/initial_rq_report.json"
+CURRENT_STAGE_LOG=""
 
 CURRENT_SID="$INITIAL_SID"
 PREVIOUS_EM_ADAPTER=""

@@ -78,3 +78,11 @@ bash scripts/run_industrial_pipeline.sh
 该命令保留原 adapter 和训练日志，单进程导出全部目录向量后继续 RQ、EM、CPT、SFT 和测试。恢复日志使用 `p2p_export_recovery_时间戳.log`。旧训练的损失、步数及输入来源无法从权重独立还原，报告会明确标记为缺少原训练完成记录，并将无法追溯的训练统计留空；不会伪造训练完成或人工确认信息。无需改动 env 的训练参数。如需禁止恢复没有完成报告的旧权重，可显式设置 `P2P_RECOVER_LEGACY=0`。
 
 如果 adapter 文件缺失、损坏、参数不匹配，或已存在不完整的向量/最终报告，恢复会报错而非覆盖产物。此时先检查日志，不要直接删除旧权重或重跑训练。
+
+## 初始 RQ 的线程限制与续跑
+
+初始 RQ 构建仅在自己的子进程中设置 `OPENBLAS_NUM_THREADS=1`、`OPENBLAS_DEFAULT_NUM_THREADS=1`、`OMP_NUM_THREADS=1`、`MKL_NUM_THREADS=1`，减少 OpenBLAS 与 K-means 并行线程叠加造成的问题；同时启用 `PYTHONFAULTHANDLER=1` 记录底层错误栈。这些设置不会修改父进程环境或后续 EM、CPT、SFT 和评估的多卡配置，也不改变三层 K-means、码本大小、`n_init=20` 或随机种子。
+
+初始 RQ 日志使用 `RUN_ROOT/logs/initial_rq_时间戳.log`，终端会提示实际路径；失败时显示最后40行并停止，不继续训练。旧的 `initial_rq.log` 保留，不覆盖。
+
+如 P2P 向量和完成报告已成功保存，而初始 RQ 尚未完成，保留原 env、`RUN_ROOT` 和 P2P 产物，更新代码后沿用一键入口即可从 RQ 继续，不重新训练或导出 P2P。若仍然段错误，请提供最新 RQ 日志及错误栈；线程限制的本机测试不等同于已验证工业机器问题消失。
