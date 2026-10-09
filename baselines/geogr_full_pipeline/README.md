@@ -63,7 +63,7 @@ RUN_ROOT/cpt_sft/eval/test_metrics.json
 
 ## P2P 训练完成后的恢复导出
 
-P2P 详细日志在 `RUN_ROOT/logs/p2p_train_运行ID.log`，不直接显示在终端。旧 `p2p_train.log` 保留。训练或恢复导出失败时，一键脚本会在终端提示实际日志位置并显示错误尾部。
+P2P 详细日志在 `RUN_ROOT/logs/p2p_train_运行ID.log`，不直接显示在终端。旧 `p2p_train.log` 保留。训练或恢复导出失败时，一键脚本会在终端提示实际日志位置并显示原始错误摘要。
 
 训练完成后所有 rank 先同步并关闭训练通信组，再由 rank 0 保存 adapter、训练完成报告和导出向量；其他 rank 不再等待长时间目录编码，因此不会因为导出超过 10 分钟而触发原来的 NCCL 超时。
 
@@ -83,7 +83,7 @@ bash scripts/run_industrial_pipeline.sh
 
 初始 RQ 构建仅在自己的子进程中设置 `OPENBLAS_NUM_THREADS=1`、`OPENBLAS_DEFAULT_NUM_THREADS=1`、`OMP_NUM_THREADS=1`、`MKL_NUM_THREADS=1`，减少 OpenBLAS 与 K-means 并行线程叠加造成的问题；同时启用 `PYTHONFAULTHANDLER=1` 记录底层错误栈。这些设置不会修改父进程环境或后续 EM、CPT、SFT 和评估的多卡配置，也不改变三层 K-means、码本大小、`n_init=20` 或随机种子。
 
-初始 RQ 日志使用 `RUN_ROOT/logs/initial_rq_时间戳.log`，终端会提示实际路径；失败时显示最后40行并停止，不继续训练。旧的 `initial_rq.log` 保留，不覆盖。
+初始 RQ 日志使用 `RUN_ROOT/logs/initial_rq_时间戳.log`，终端会提示实际路径；失败时显示原始错误摘要并停止，不继续训练。旧的 `initial_rq.log` 保留，不覆盖。
 
 如 P2P 向量和完成报告已成功保存，而初始 RQ 尚未完成，保留原 env、`RUN_ROOT` 和 P2P 产物，更新代码后沿用一键入口即可从 RQ 继续，不重新训练或导出 P2P。若仍然段错误，请提供最新 RQ 日志及错误栈；线程限制的本机测试不等同于已验证工业机器问题消失。
 
@@ -91,9 +91,11 @@ bash scripts/run_industrial_pipeline.sh
 
 无需修改原 env，一键入口在模型训练前使用原 `GPUS` 列表运行轻量 DDP 初始化、反向传播、4 MiB all-reduce 和 broadcast。预检设置通信超时及进程总时限，避免加载大模型后才发现通信不可用。
 
-原生 NCCL 预检失败时，默认在相同卡数上尝试 socket 兼容通信：禁用 P2P、SHM、IB、cuMem 和 NVLS。只有该预检通过才继续；两次均失败则停止，不启动训练。兼容模式可能降低通信性能，也不能保证解决容器的所有问题；可设置 `NCCL_COMPAT_RETRY=0` 禁止自动尝试。实际传输配置、Torch 版本及逐 rank 结果保存在 `RUN_ROOT/preflight/运行ID/`，详细日志为 `nccl_preflight_运行ID.log`、`nccl_preflight_compat_运行ID.log`。脚本不自动减少卡数、改 batch、改训练目标或缩减数据。
+默认在相同卡数上显式使用 socket 兼容通信：禁用 P2P、SHM、IB、cuMem 和 NVLS，并先验证这一配置；只有预检通过才继续，否则停止。这样不再仅因小模型原生预检通过，就跳过兼容配置。兼容模式可能降低通信性能，且不能保证各厂商通信后端均支持这些 NCCL 设置。实际传输配置、Torch 版本及逐 rank 结果保存在 `RUN_ROOT/preflight/运行ID/`，详细日志为 `nccl_preflight_compat_运行ID.log`。脚本不自动减少卡数、改 batch、改训练目标或缩减数据。无需修改原 env；需要恢复原生优先策略时可显式设置 `GEOGR_NCCL_PROFILE=auto`，该模式在原生预检失败后尝试兼容配置（`NCCL_COMPAT_RETRY=0` 禁止重试）；`GEOGR_NCCL_PROFILE=native` 则只验证原生配置。
 
-每个阶段都有独立的 `阶段名_运行ID.log`：输入视图、P2P、RQ、每轮 EM 的数据/训练/beam 试解码/各卡候选/合并/分配、推荐数据、CPT、SFT、评估。开始时立即写入命令及 START；静默计算时每 60 秒写 RUNNING 和已耗时间；结束写 DONE 或 FAILED。RQ 同时报告真实的层数、输入维度及各层开始/完成。训练和候选生成保留低频 tqdm，不逐 step 扩张日志。总状态日志为 `pipeline_运行ID.log`；评估各卡日志仍在 `cpt_sft/eval/shards/评估ID/logs/`。
+轻量预检不能证明加载完整模型后的资源足够。EM、CPT 和最终 SFT 会在模型加载完成后、DDP 初始化前后记录逐 rank 的显存已分配量、保留量、可用量、模型参数字节数、设备、运行库版本和传输配置，写入各阶段日志及 `RUN_ROOT/logs/ddp_运行ID/阶段名.rank_N.jsonl`。默认在 DDP 前释放未使用的 CUDA 缓存，不释放模型权重、不修改训练配置；如需关闭可设置 `GEOGR_DDP_EMPTY_CACHE=0`。若设备内存查询不受厂商后端支持，会记录查询错误，但不覆盖真正的训练异常。
+
+每个阶段都有独立的 `阶段名_运行ID.log`：输入视图、P2P、RQ、每轮 EM 的数据/训练/beam 试解码/各卡候选/合并/分配、推荐数据、CPT、SFT、评估。开始时立即写入命令及 START；静默计算时每 60 秒写 RUNNING 和已耗时间；结束写 DONE 或 FAILED。失败时终端提取最早的底层错误、第一段原始 traceback 及日志尾部，不再只显示可能掩盖根因的启动器摘要；训练入口同时启用 Torch Elastic 原始异常记录。RQ 同时报告真实的层数、输入维度及各层开始/完成。训练和候选生成保留低频 tqdm，不逐 step 扩张日志。总状态日志为 `pipeline_运行ID.log`；评估各卡日志仍在 `cpt_sft/eval/shards/评估ID/logs/`。
 
 已完成 P2P 和初始 RQ 会复用；EM 前核验目录、向量与 SID 覆盖、码本大小及三层容量。训练阶段只有在最终 adapter 配置、权重、tokenizer 与训练总结齐全时才跳过。CPT 与 EM/SFT 使用相同的纯 DDP PEFT 保存兼容处理。评估重试使用新分片 ID，保留旧分片及单边落盘文件；预测和指标均通过 JSON 检查后才视为完成。
 

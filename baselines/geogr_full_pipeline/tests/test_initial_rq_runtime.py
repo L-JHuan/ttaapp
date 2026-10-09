@@ -34,9 +34,11 @@ class InitialRqRuntimeTest(unittest.TestCase):
         record = root / "calls.jsonl"
         probe = root / "probe.py"
         probe.write_text(
-            '#!' + sys.executable + '\nimport json, os, sys\n'
+            '#!' + sys.executable + '\nimport json, os, sys, subprocess\n'
             'from pathlib import Path\n'
             'args = sys.argv[1:]\n'
+            'if args and args[0].endswith("summarize_stage_error.py"):\n'
+            '    sys.exit(subprocess.run([os.environ["REAL_PYTHON"], *args]).returncode)\n'
             'keys = ' + repr(list(THREAD_VALUES)) + '\n'
             'with Path(os.environ["CALL_RECORD"]).open("a") as stream:\n'
             '    stream.write(json.dumps({"args": args, "env": {key: os.environ.get(key) for key in keys}}) + "\\n")\n'

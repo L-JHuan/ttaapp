@@ -86,6 +86,8 @@ export PYTHONUNBUFFERED=1 PYTHONFAULTHANDLER=1
 export TOKENIZERS_PARALLELISM=false
 export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
 PIPELINE_RUN_ID=$(date '+%Y%m%d_%H%M%S')_$$
+export GEOGR_DIAGNOSTIC_ROOT="$RUN_ROOT/logs/ddp_${PIPELINE_RUN_ID}"
+export GEOGR_SCRIPT_ROOT="$SCRIPT_ROOT"
 # 总日志只记录阶段状态；详细进度保存在各阶段日志中。
 exec > >(tee -a "$RUN_ROOT/logs/pipeline_${PIPELINE_RUN_ID}.log") 2>&1
 
@@ -96,8 +98,12 @@ pipeline_failed() {
   local status=$1 line=$2
   echo "GeoGR pipeline failed: exit=$status line=$line; logs=$RUN_ROOT/logs" >&2
   if [[ -n "$CURRENT_STAGE_LOG" && -f "$CURRENT_STAGE_LOG" ]]; then
-    echo "Stage log: $CURRENT_STAGE_LOG (last 40 lines)" >&2
-    tail -n 40 "$CURRENT_STAGE_LOG" >&2
+    if declare -F show_stage_error >/dev/null; then
+      show_stage_error "$CURRENT_STAGE_LOG"
+    else
+      echo "Stage log: $CURRENT_STAGE_LOG (last 40 lines)" >&2
+      tail -n 40 "$CURRENT_STAGE_LOG" >&2
+    fi
   fi
   exit "$status"
 }

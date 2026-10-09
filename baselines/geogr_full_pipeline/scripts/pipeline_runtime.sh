@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 # 每次调用单独留日志，静默 CPU 阶段也保留心跳；不伪造算法进度。
+show_stage_error() {
+  local file=$1 root=${GEOGR_SCRIPT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+  echo "Stage log: $file" >&2
+  # 不依赖 torch 导入；优先展示底层根因和第一个原始堆栈。
+  "${PYTHON_BIN:-python}" "$root/geogr_full_pipeline/summarize_stage_error.py" "$file" >&2 || tail -n 60 "$file" >&2
+}
+
 run_stage() {
   local name=$1 status=0 child heartbeat started=$SECONDS
   shift
@@ -10,7 +17,7 @@ run_stage() {
   printf ' %q' "$@" >>"$CURRENT_STAGE_LOG"
   printf '\n' >>"$CURRENT_STAGE_LOG"
   echo "[$(date -Is)] $name: Log: $CURRENT_STAGE_LOG"
-  (trap - ERR; exec "$@") >>"$CURRENT_STAGE_LOG" 2>&1 &
+  (trap - ERR; exec env GEOGR_STAGE="$name" "$@") >>"$CURRENT_STAGE_LOG" 2>&1 &
   child=$!
   (
     trap - ERR
@@ -33,25 +40,46 @@ run_stage() {
   trap - TERM INT
   if (( status != 0 )); then
     echo "[$(date -Is)] FAILED exit=$status elapsed=$((SECONDS-started))s" >>"$CURRENT_STAGE_LOG"
-    echo "Stage log: $CURRENT_STAGE_LOG" >&2
-    tail -n 60 "$CURRENT_STAGE_LOG" >&2
+    show_stage_error "$CURRENT_STAGE_LOG"
     return "$status"
   fi
   echo "[$(date -Is)] DONE exit=0 elapsed=$((SECONDS-started))s" >>"$CURRENT_STAGE_LOG"
   echo "[$(date -Is)] $name completed."
 }
 
+enable_compat_transport() {
+  export NCCL_P2P_DISABLE=1 NCCL_SHM_DISABLE=1 NCCL_IB_DISABLE=1
+  export NCCL_CUMEM_HOST_ENABLE=0 NCCL_CUMEM_ENABLE=0 NCCL_NVLS_ENABLE=0
+}
+
 check_gpu_communication() {
-  # 保留原 GPU 数量，先测原生通信；仅失败后尝试兼容传输，不自动降低卡数。
+  # 小模型预检不覆盖加载大模型后的内存状态，默认直接验证兼容配置。
+  local profile=${GEOGR_NCCL_PROFILE:-socket}
+  case "$profile" in
+    socket)
+      enable_compat_transport
+      echo "Validate explicit socket compatibility on the same $GPU_COUNT GPUs; model/optimizer settings unchanged."
+      if run_stage nccl_preflight_compat timeout --signal=TERM --kill-after=15s 180s env CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON_BIN" -u \
+          -m torch.distributed.run --standalone --nproc_per_node="$GPU_COUNT" \
+          -m geogr_full_pipeline.nccl_preflight --report_dir "$RUN_ROOT/preflight/$PIPELINE_RUN_ID/compat"; then
+        echo "Socket compatibility preflight passed; this profile stays enabled for subsequent training."
+        return 0
+      fi
+      echo "Socket compatibility preflight failed; no training started." >&2
+      return 1
+      ;;
+    auto|native) ;;
+    *) echo "Unknown GEOGR_NCCL_PROFILE=$profile; expected socket, auto or native." >&2; return 2 ;;
+  esac
   if run_stage nccl_preflight timeout --signal=TERM --kill-after=15s 180s env CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON_BIN" -u \
       -m torch.distributed.run --standalone --nproc_per_node="$GPU_COUNT" \
       -m geogr_full_pipeline.nccl_preflight --report_dir "$RUN_ROOT/preflight/$PIPELINE_RUN_ID/native"; then
     return 0
   fi
+  [[ "$profile" != "native" ]] || return 1
   [[ "${NCCL_COMPAT_RETRY:-1}" == "1" ]] || return 1
   echo "Native NCCL preflight failed; testing socket compatibility on the same $GPU_COUNT GPUs."
-  export NCCL_P2P_DISABLE=1 NCCL_SHM_DISABLE=1 NCCL_IB_DISABLE=1
-  export NCCL_CUMEM_HOST_ENABLE=0 NCCL_CUMEM_ENABLE=0 NCCL_NVLS_ENABLE=0
+  enable_compat_transport
   if run_stage nccl_preflight_compat timeout --signal=TERM --kill-after=15s 180s env CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON_BIN" -u \
       -m torch.distributed.run --standalone --nproc_per_node="$GPU_COUNT" \
       -m geogr_full_pipeline.nccl_preflight --report_dir "$RUN_ROOT/preflight/$PIPELINE_RUN_ID/compat"; then

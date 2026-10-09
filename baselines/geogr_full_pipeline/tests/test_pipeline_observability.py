@@ -90,7 +90,7 @@ class PipelineObservabilityTest(unittest.TestCase):
         result = subprocess.run(["bash", "-c", command], text=True, capture_output=True,
                                 env={**os.environ, "HELPER": str(ROOT / "scripts/pipeline_runtime.sh"),
                                      "GPUS": "0,1,2,3", "GPU_COUNT": "4", "PYTHON_BIN": sys.executable,
-                                     "RUN_ROOT": "/tmp", "PIPELINE_RUN_ID": "test"})
+                                     "RUN_ROOT": "/tmp", "PIPELINE_RUN_ID": "test", "GEOGR_NCCL_PROFILE": "auto"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("profile=1/1 gpus=0,1,2,3 count=4", result.stdout)
         self.assertEqual(result.stdout.count("--nproc_per_node=4"), 2)
@@ -101,7 +101,7 @@ class PipelineObservabilityTest(unittest.TestCase):
             text=True, capture_output=True,
             env={**os.environ, "HELPER": str(ROOT / "scripts/pipeline_runtime.sh"),
                  "GPUS": "0,1", "GPU_COUNT": "2", "PYTHON_BIN": sys.executable,
-                 "RUN_ROOT": "/tmp", "PIPELINE_RUN_ID": "test"},
+                 "RUN_ROOT": "/tmp", "PIPELINE_RUN_ID": "test", "GEOGR_NCCL_PROFILE": "auto"},
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("forbidden_training", result.stdout)

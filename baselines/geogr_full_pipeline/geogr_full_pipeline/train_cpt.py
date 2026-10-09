@@ -12,7 +12,7 @@ from typing import Any
 
 import torch
 from peft import LoraConfig, get_peft_model
-from torch.nn.parallel import DistributedDataParallel
+from torch.distributed.elastic.multiprocessing.errors import record
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
@@ -22,6 +22,7 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 from geogr_full_pipeline.peft_compat import configure_ddp_peft_save
+from geogr_full_pipeline.ddp_diagnostics import logged_ddp
 
 
 class CptDataset(Dataset):
@@ -140,6 +141,7 @@ def setup_distributed() -> tuple[torch.device, int, int, bool]:
     return device, rank, world_size, False
 
 
+@record
 def main() -> None:
     configure_ddp_peft_save()
     args = parse_args()
@@ -200,7 +202,7 @@ def main() -> None:
         model.config.use_cache = False
         model.to(device)
         if distributed:
-            model = DistributedDataParallel(
+            model = logged_ddp(
                 model, device_ids=[device.index], output_device=device.index
             )
 

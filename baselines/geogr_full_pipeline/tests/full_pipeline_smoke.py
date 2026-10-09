@@ -70,6 +70,19 @@ def main():
         assert all(path.stat().st_size > 0 for path in logs)
         for name in ("p2p_train", "initial_rq", "em_1_train", "em_2_train", "cpt_train", "cpt_sft_train", "cpt_sft_eval"):
             assert any("DONE exit=0" in path.read_text() for path in (run / "logs").glob(name + "_*.log")), name
+        for stage in ("em_1_train", "em_2_train", "cpt_train", "cpt_sft_train"):
+            for rank in (0, 1):
+                paths = list((run / "logs").glob(f"ddp_*/{stage}.rank_{rank}.jsonl"))
+                assert len(paths) == 1, (stage, rank, paths)
+                snapshots = [json.loads(line) for line in paths[0].read_text().splitlines()]
+                assert {"before_ddp", "after_empty_cache", "after_ddp"} <= {s["phase"] for s in snapshots}
+                for snapshot in snapshots:
+                    assert int(snapshot["rank"]) == rank
+                    assert snapshot["parameter_bytes"] > 0
+                    assert snapshot["device_free_bytes"] > 0
+                    assert snapshot["transport"]["NCCL_P2P_DISABLE"] == "1"
+                    assert snapshot["transport"]["NCCL_SHM_DISABLE"] == "1"
+        assert any("DONE exit=0" in path.read_text() for path in (run / "logs").glob("nccl_preflight_compat_*.log"))
         (root / "before_resume.json").write_text(json.dumps(hashes(run)), encoding="utf-8")
         print("FULL_PIPELINE_SMOKE_OK: P2P/RQ/two-EM/CPT/SFT/2-shard-beam10; 4 test samples; all stage logs nonempty", flush=True)
     elif args.mode == "check_resume":
