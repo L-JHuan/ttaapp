@@ -8,6 +8,7 @@ import csv
 import json
 import math
 import random
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -157,6 +158,8 @@ def residual_kmeans(
     layer_codes: list[np.ndarray] = []
     layer_reports: list[dict[str, float | int]] = []
     for layer in range(num_layers):
+        started = time.monotonic()
+        print(f"RQ layer {layer + 1}/{num_layers}: fitting K-means, n_init=20", flush=True)
         clusters = min(codebook_size, len(values))
         model = KMeans(
             n_clusters=clusters,
@@ -176,6 +179,7 @@ def residual_kmeans(
                 "mean_residual_l2": float(np.linalg.norm(residual, axis=1).mean()),
             }
         )
+        print(f"RQ layer {layer + 1}/{num_layers}: completed in {time.monotonic() - started:.1f}s; used_codes={len(set(codes.tolist()))}", flush=True)
     return (
         np.stack(layer_codes, axis=1),
         quantized,

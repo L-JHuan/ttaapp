@@ -21,6 +21,7 @@ from transformers import (
     AutoTokenizer,
     get_linear_schedule_with_warmup,
 )
+from geogr_full_pipeline.peft_compat import configure_ddp_peft_save
 
 
 class CptDataset(Dataset):
@@ -140,6 +141,7 @@ def setup_distributed() -> tuple[torch.device, int, int, bool]:
 
 
 def main() -> None:
+    configure_ddp_peft_save()
     args = parse_args()
     validate_args(args)
     random.seed(args.seed)

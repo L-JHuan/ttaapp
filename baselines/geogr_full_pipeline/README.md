@@ -59,11 +59,11 @@ RUN_ROOT/cpt_sft/eval/test_predictions.json
 RUN_ROOT/cpt_sft/eval/test_metrics.json
 ```
 
-训练、SID 构建、EM 更新和评估日志分别写入 `RUN_ROOT/logs/`。脚本会复用已经完整落盘的中间阶段；检测到不完整的正式输出目录时会停止，避免覆盖或继续使用损坏产物。
+训练、SID 构建、EM 更新和评估日志分别写入 `RUN_ROOT/logs/`。脚本会复用已经完整落盘的中间阶段；未完成的 EM/CPT/SFT checkpoint 会改名为 `checkpoint.incomplete_运行ID` 保留，再只重跑该训练阶段，不删除旧权重。不完整的数据预处理或 P2P 产物仍会停止，避免覆盖来源不明的数据。
 
 ## P2P 训练完成后的恢复导出
 
-P2P 详细日志在 `RUN_ROOT/logs/p2p_train.log`，不直接显示在终端。P2P 训练或恢复导出失败时，一键脚本会在终端提示日志位置并显示该阶段最后 40 行。
+P2P 详细日志在 `RUN_ROOT/logs/p2p_train_运行ID.log`，不直接显示在终端。旧 `p2p_train.log` 保留。训练或恢复导出失败时，一键脚本会在终端提示实际日志位置并显示错误尾部。
 
 训练完成后所有 rank 先同步并关闭训练通信组，再由 rank 0 保存 adapter、训练完成报告和导出向量；其他 rank 不再等待长时间目录编码，因此不会因为导出超过 10 分钟而触发原来的 NCCL 超时。
 
@@ -86,3 +86,15 @@ bash scripts/run_industrial_pipeline.sh
 初始 RQ 日志使用 `RUN_ROOT/logs/initial_rq_时间戳.log`，终端会提示实际路径；失败时显示最后40行并停止，不继续训练。旧的 `initial_rq.log` 保留，不覆盖。
 
 如 P2P 向量和完成报告已成功保存，而初始 RQ 尚未完成，保留原 env、`RUN_ROOT` 和 P2P 产物，更新代码后沿用一键入口即可从 RQ 继续，不重新训练或导出 P2P。若仍然段错误，请提供最新 RQ 日志及错误栈；线程限制的本机测试不等同于已验证工业机器问题消失。
+
+## 多卡通信预检、全阶段日志与恢复
+
+无需修改原 env，一键入口在模型训练前使用原 `GPUS` 列表运行轻量 DDP 初始化、反向传播、4 MiB all-reduce 和 broadcast。预检设置通信超时及进程总时限，避免加载大模型后才发现通信不可用。
+
+原生 NCCL 预检失败时，默认在相同卡数上尝试 socket 兼容通信：禁用 P2P、SHM、IB、cuMem 和 NVLS。只有该预检通过才继续；两次均失败则停止，不启动训练。兼容模式可能降低通信性能，也不能保证解决容器的所有问题；可设置 `NCCL_COMPAT_RETRY=0` 禁止自动尝试。实际传输配置、Torch 版本及逐 rank 结果保存在 `RUN_ROOT/preflight/运行ID/`，详细日志为 `nccl_preflight_运行ID.log`、`nccl_preflight_compat_运行ID.log`。脚本不自动减少卡数、改 batch、改训练目标或缩减数据。
+
+每个阶段都有独立的 `阶段名_运行ID.log`：输入视图、P2P、RQ、每轮 EM 的数据/训练/beam 试解码/各卡候选/合并/分配、推荐数据、CPT、SFT、评估。开始时立即写入命令及 START；静默计算时每 60 秒写 RUNNING 和已耗时间；结束写 DONE 或 FAILED。RQ 同时报告真实的层数、输入维度及各层开始/完成。训练和候选生成保留低频 tqdm，不逐 step 扩张日志。总状态日志为 `pipeline_运行ID.log`；评估各卡日志仍在 `cpt_sft/eval/shards/评估ID/logs/`。
+
+已完成 P2P 和初始 RQ 会复用；EM 前核验目录、向量与 SID 覆盖、码本大小及三层容量。训练阶段只有在最终 adapter 配置、权重、tokenizer 与训练总结齐全时才跳过。CPT 与 EM/SFT 使用相同的纯 DDP PEFT 保存兼容处理。评估重试使用新分片 ID，保留旧分片及单边落盘文件；预测和指标均通过 JSON 检查后才视为完成。
+
+代码中的 `tests/full_pipeline_smoke.py` 提供小型随机 Llama 的 GPU 全链路夹具，用于验证两轮 EM、CPT→SFT、两卡 beam-10 测试和已完成权重续跑。它仅验证流程，不代表工业数据质量或 16 卡环境已经验证。

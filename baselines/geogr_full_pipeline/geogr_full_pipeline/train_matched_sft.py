@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-import peft.utils.save_and_load as peft_save_and_load
-
-
-def _skip_tensor_parallel_sharding(model, state_dict, adapter_name):
-    """本实验仅使用 DDP；模型没有 HF tensor-parallel plan，无需 TP 权重分片。"""
-    del model, state_dict, adapter_name
+from geogr_full_pipeline.peft_compat import configure_ddp_peft_save
 
 
 def main() -> None:
-    peft_save_and_load._maybe_shard_state_dict_for_tp = _skip_tensor_parallel_sharding
+    configure_ddp_peft_save()
     from tap_sid.train_tap_sid import main as tap_main
 
     tap_main()

@@ -64,6 +64,10 @@ for index in "${!GPU_IDS[@]}"; do
   [[ -n "${GPU_IDS[$index]}" ]] || { echo "GPUS contains an empty ID" >&2; exit 2; }
 done
 GPU_COUNT=${#GPU_IDS[@]}
+[[ $(printf '%s\n' "${GPU_IDS[@]}" | sort -u | wc -l) -eq "$GPU_COUNT" ]] || {
+  echo "GPUS contains duplicate IDs: $GPUS" >&2; exit 2;
+}
+GPUS=$(IFS=,; echo "${GPU_IDS[*]}")
 
 [[ -d "$BASE_MODEL" ]] || { echo "Base model missing: $BASE_MODEL" >&2; exit 2; }
 [[ -d "$PROCESSED_ROOT" ]] || { echo "Processed root missing: $PROCESSED_ROOT" >&2; exit 2; }
@@ -78,6 +82,12 @@ export PYTHONPATH="$REPO_ROOT/baselines/geogr_full_pipeline:$REPO_ROOT"
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 export TQDM_MININTERVAL=${TQDM_MININTERVAL:-60}
 export TQDM_MINITERS=${TQDM_MINITERS:-50}
+export PYTHONUNBUFFERED=1 PYTHONFAULTHANDLER=1
+export TOKENIZERS_PARALLELISM=false
+export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
+PIPELINE_RUN_ID=$(date '+%Y%m%d_%H%M%S')_$$
+# 总日志只记录阶段状态；详细进度保存在各阶段日志中。
+exec > >(tee -a "$RUN_ROOT/logs/pipeline_${PIPELINE_RUN_ID}.log") 2>&1
 
 timestamp() { date '+%Y-%m-%d %H:%M:%S %z'; }
 log() { echo "[$(timestamp)] $*"; }
@@ -99,6 +109,14 @@ require_new_dir() {
     echo "Incomplete output requires a new path: $path" >&2
     exit 2
   fi
+}
+source "$SCRIPT_ROOT/scripts/pipeline_runtime.sh"
+checkpoint_ready() {
+  "$PYTHON_BIN" -m geogr_full_pipeline.runtime_checks --checkpoint "$1" --final_name "$2"
+}
+prepare_checkpoint() {
+  "$PYTHON_BIN" -m geogr_full_pipeline.runtime_checks --checkpoint "$1" --final_name "$2" \
+    --run_root "$RUN_ROOT" --archive_suffix "$PIPELINE_RUN_ID"
 }
 gpu_is_free() {
   local gpu=$1 memory utilization
@@ -145,11 +163,10 @@ if [[ -d "$PROCESSED_ROOT/sequence_parquet" ]]; then
   if [[ ! -s "$INPUT_REPORT" ]]; then
     require_new_dir "$INPUT_ROOT"
     log "Materialize compact GeoGR views from TAP Spark outputs."
-    "$SPARK_SUBMIT_BIN" "${SPARK_ARGS[@]}" \
+    run_stage prepare_industrial_inputs_spark "$SPARK_SUBMIT_BIN" "${SPARK_ARGS[@]}" \
       "$REPO_ROOT/baselines/geogr_full_pipeline/geogr_full_pipeline/prepare_industrial_inputs_spark.py" \
       --processed_root "$PROCESSED_ROOT" --output_dir "$INPUT_ROOT" \
-      --shuffle_partitions "$SPARK_SHUFFLE_PARTITIONS" \
-      >"$RUN_ROOT/logs/prepare_industrial_inputs_spark.log" 2>&1
+      --shuffle_partitions "$SPARK_SHUFFLE_PARTITIONS"
   fi
   json_ok "$INPUT_REPORT"
   POI_INFO="$INPUT_ROOT/poi_info.csv"
@@ -175,6 +192,7 @@ else
 fi
 
 wait_for_gpus
+check_gpu_communication
 
 P2P_ROOT="$RUN_ROOT/p2p"
 if [[ ! -s "$P2P_ROOT/p2p_encoder_report.json" || ! -s "$P2P_ROOT/refined_embeddings.npz" ]]; then
@@ -184,19 +202,18 @@ if [[ ! -s "$P2P_ROOT/p2p_encoder_report.json" || ! -s "$P2P_ROOT/refined_embedd
       # 允许缺少完成报告的旧权重恢复，不代表已验证原训练完成或输入来源。
       RECOVERY_ARGS=(--allow_legacy_adapter)
     fi
-    CURRENT_STAGE_LOG="$RUN_ROOT/logs/p2p_export_recovery_$(date '+%Y%m%d_%H%M%S').log"
+    CURRENT_STAGE_LOG="$RUN_ROOT/logs/p2p_export_recovery_${PIPELINE_RUN_ID}.log"
     log "Recover P2P embeddings from saved adapter; no retraining. Log: $CURRENT_STAGE_LOG"
-    CUDA_VISIBLE_DEVICES="${GPU_IDS[0]}" "$PYTHON_BIN" -u -m geogr_full_pipeline.recover_p2p_export \
+    run_stage p2p_export_recovery env CUDA_VISIBLE_DEVICES="${GPU_IDS[0]}" "$PYTHON_BIN" -u -m geogr_full_pipeline.recover_p2p_export \
       --poi_info "$POI_INFO" --role_priors "$ROLE_PRIORS" "${ID_MAPPING_ARGS[@]}" \
       --train_sequences "$TRAIN_SEQUENCES" --encoder_model "$BASE_MODEL" \
       --adapter_dir "$P2P_ROOT/encoder_adapter" --output_dir "$P2P_ROOT" \
-      --device cuda:0 --encode_batch_size 8 "${RECOVERY_ARGS[@]}" \
-      >"$CURRENT_STAGE_LOG" 2>&1
+      --device cuda:0 --encode_batch_size 8 "${RECOVERY_ARGS[@]}"
   else
     require_new_dir "$P2P_ROOT"
-    CURRENT_STAGE_LOG="$RUN_ROOT/logs/p2p_train.log"
+    CURRENT_STAGE_LOG="$RUN_ROOT/logs/p2p_train_${PIPELINE_RUN_ID}.log"
     log "P2P: ${GPU_COUNT}-GPU Llama-3-8B LoRA contrastive training. Log: $CURRENT_STAGE_LOG"
-    CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON_BIN" -u -m torch.distributed.run \
+    run_stage p2p_train env CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON_BIN" -u -m torch.distributed.run \
       --standalone --nproc_per_node="$GPU_COUNT" -m geogr_full_pipeline.train_p2p_encoder \
       --poi_info "$POI_INFO" --role_priors "$ROLE_PRIORS" "${ID_MAPPING_ARGS[@]}" \
       --train_sequences "$TRAIN_SEQUENCES" --encoder_model "$BASE_MODEL" \
@@ -204,8 +221,7 @@ if [[ ! -s "$P2P_ROOT/p2p_encoder_report.json" || ! -s "$P2P_ROOT/refined_embedd
       --grad_accum "$P2P_GRAD_ACCUM" --encode_batch_size 8 --epochs "$P2P_EPOCHS" \
       --learning_rate "$LEARNING_RATE" --temperature 0.07 \
       --max_distance_km 3.0 --min_common_users 2 --swing_alpha 1.0 \
-      --max_pairs_per_poi "$P2P_MAX_PAIRS_PER_POI" --seed 2024 \
-      >"$CURRENT_STAGE_LOG" 2>&1
+      --max_pairs_per_poi "$P2P_MAX_PAIRS_PER_POI" --seed 2024
   fi
 fi
 json_ok "$P2P_ROOT/p2p_encoder_report.json"
@@ -213,39 +229,45 @@ CURRENT_STAGE_LOG=""
 
 INITIAL_SID="$RUN_ROOT/sid/initial_rq_sid.csv"
 if [[ ! -s "$INITIAL_SID" ]]; then
-  CURRENT_STAGE_LOG="$RUN_ROOT/logs/initial_rq_$(date '+%Y%m%d_%H%M%S').log"
+  CURRENT_STAGE_LOG="$RUN_ROOT/logs/initial_rq_${PIPELINE_RUN_ID}.log"
   log "Initial RQ: CPU BLAS/OpenMP threads=1; reuse saved P2P embeddings. Log: $CURRENT_STAGE_LOG"
   # 仅限制本次 RQ 子进程，避免 OpenBLAS/OpenMP 线程过多；不影响后续多卡训练。
-  OPENBLAS_NUM_THREADS=1 OPENBLAS_DEFAULT_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  run_stage initial_rq env OPENBLAS_NUM_THREADS=1 OPENBLAS_DEFAULT_NUM_THREADS=1 OMP_NUM_THREADS=1 \
     MKL_NUM_THREADS=1 PYTHONFAULTHANDLER=1 \
     "$PYTHON_BIN" -u -m geogr_full_pipeline.build_initial_rq_sid \
     --embeddings_npz "$P2P_ROOT/refined_embeddings.npz" \
     --output_csv "$INITIAL_SID" --report_json "$RUN_ROOT/sid/initial_rq_report.json" \
-    --codebook_size "$CODEBOOK_SIZE" --seed 2024 >"$CURRENT_STAGE_LOG" 2>&1
+    --codebook_size "$CODEBOOK_SIZE" --seed 2024
 fi
 json_ok "$RUN_ROOT/sid/initial_rq_report.json"
 CURRENT_STAGE_LOG=""
 
 CURRENT_SID="$INITIAL_SID"
+run_stage validate_initial_sid "$PYTHON_BIN" -u -m geogr_full_pipeline.validate_pipeline_inputs \
+  --poi_info "$POI_INFO" --role_priors "$ROLE_PRIORS" "${ID_MAPPING_ARGS[@]}" \
+  --embeddings_npz "$P2P_ROOT/refined_embeddings.npz" --sid_csv "$INITIAL_SID" \
+  --report_json "$RUN_ROOT/sid/initial_rq_report.json" --codebook_size "$CODEBOOK_SIZE"
 PREVIOUS_EM_ADAPTER=""
 for ((iteration=1; iteration<=EM_ITERATIONS; iteration++)); do
   ITER_ROOT="$RUN_ROOT/em/iteration_${iteration}"
   mkdir -p "$ITER_ROOT"
   EM_DATA="$ITER_ROOT/em_train.json"
   if [[ ! -s "$EM_DATA" ]]; then
-    "$PYTHON_BIN" -m geogr_full_pipeline.build_em_data \
+    run_stage "em_${iteration}_data" "$PYTHON_BIN" -u -m geogr_full_pipeline.build_em_data \
       --poi_info "$POI_INFO" --role_priors "$ROLE_PRIORS" "${ID_MAPPING_ARGS[@]}" \
       --sid_csv "$CURRENT_SID" --output_json "$EM_DATA" \
       --report_json "$ITER_ROOT/em_data_report.json"
   fi
+  json_ok "$EM_DATA"
+  json_ok "$ITER_ROOT/em_data_report.json"
   EM_CHECKPOINT="$ITER_ROOT/checkpoint"
-  if [[ ! -s "$EM_CHECKPOINT/final_sft/adapter_config.json" ]]; then
-    require_new_dir "$EM_CHECKPOINT"
+  if ! checkpoint_ready "$EM_CHECKPOINT" final_sft; then
+    prepare_checkpoint "$EM_CHECKPOINT" final_sft
     INIT_ARGS=()
     if [[ -n "$PREVIOUS_EM_ADAPTER" ]]; then
       INIT_ARGS=(--init_adapter_dir "$PREVIOUS_EM_ADAPTER" --tokenizer_path "$PREVIOUS_EM_ADAPTER")
     fi
-    CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON_BIN" -m torch.distributed.run \
+    run_stage "em_${iteration}_train" env CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON_BIN" -u -m torch.distributed.run \
       --standalone --nproc_per_node="$GPU_COUNT" -m geogr_full_pipeline.train_matched_sft \
       --base_model "$BASE_MODEL" "${INIT_ARGS[@]}" --train_dataset "$EM_DATA" \
       --output_dir "$EM_CHECKPOINT" --batch_size 1 --eval_batch_size 1 \
@@ -253,32 +275,32 @@ for ((iteration=1; iteration<=EM_ITERATIONS; iteration++)); do
       --learning_rate "$LEARNING_RATE" --cutoff_len 512 --lm_loss_weight 1.0 \
       --alpha_prefix 0.0 --head_dropout 0.1 --lora_r 16 --lora_alpha 32 \
       --lora_dropout 0.1 --gradient_checkpointing --seed "$SEED" \
-      --logging_steps 120 --attn_implementation sdpa \
-      >"$RUN_ROOT/logs/em_${iteration}_train.log" 2>&1
+      --logging_steps 120 --attn_implementation sdpa
   fi
+  checkpoint_ready "$EM_CHECKPOINT" final_sft
   EM_ADAPTER="$EM_CHECKPOINT/final_sft"
 
   SMOKE_REPORT="$ITER_ROOT/beam_smoke_report.json"
   if [[ ! -s "$SMOKE_REPORT" ]]; then
-    CUDA_VISIBLE_DEVICES="${GPU_IDS[0]}" "$PYTHON_BIN" -m geogr_full_pipeline.em_refine_sid \
+    run_stage "em_${iteration}_beam_smoke" env CUDA_VISIBLE_DEVICES="${GPU_IDS[0]}" "$PYTHON_BIN" -u -m geogr_full_pipeline.em_refine_sid \
       --poi_info "$POI_INFO" --role_priors "$ROLE_PRIORS" "${ID_MAPPING_ARGS[@]}" \
       --input_sid_csv "$CURRENT_SID" --base_model "$BASE_MODEL" \
       --adapter_dir "$EM_ADAPTER" --tokenizer_path "$EM_ADAPTER" \
       --output_sid_csv "$ITER_ROOT/unused_smoke_sid.csv" \
       --candidates_json "$ITER_ROOT/beam_smoke_candidates.json" \
       --report_json "$SMOKE_REPORT" --codebook_size "$CODEBOOK_SIZE" \
-      --num_beams "$EM_BEAMS" --device cuda:0 --limit 1 --candidates_only \
-      >"$RUN_ROOT/logs/em_${iteration}_beam_smoke.log" 2>&1
+      --num_beams "$EM_BEAMS" --device cuda:0 --limit 1 --candidates_only
   fi
   json_ok "$SMOKE_REPORT"
 
   SHARD_PIDS=()
+  SHARD_LOGS=()
   for shard_index in "${!GPU_IDS[@]}"; do
     SHARD_JSON="$ITER_ROOT/candidates_shard_${shard_index}.json"
     SHARD_REPORT="$ITER_ROOT/candidates_shard_${shard_index}_report.json"
     if [[ ! -s "$SHARD_JSON" || ! -s "$SHARD_REPORT" ]]; then
       gpu=${GPU_IDS[$shard_index]}
-      CUDA_VISIBLE_DEVICES="$gpu" "$PYTHON_BIN" -m geogr_full_pipeline.em_refine_sid \
+      run_stage "em_${iteration}_candidates_shard_${shard_index}" env CUDA_VISIBLE_DEVICES="$gpu" "$PYTHON_BIN" -u -m geogr_full_pipeline.em_refine_sid \
         --poi_info "$POI_INFO" --role_priors "$ROLE_PRIORS" "${ID_MAPPING_ARGS[@]}" \
         --input_sid_csv "$CURRENT_SID" --base_model "$BASE_MODEL" \
         --adapter_dir "$EM_ADAPTER" --tokenizer_path "$EM_ADAPTER" \
@@ -286,12 +308,25 @@ for ((iteration=1; iteration<=EM_ITERATIONS; iteration++)); do
         --candidates_json "$SHARD_JSON" --report_json "$SHARD_REPORT" \
         --codebook_size "$CODEBOOK_SIZE" --num_beams "$EM_BEAMS" \
         --device cuda:0 --shard_index "$shard_index" --num_shards "$GPU_COUNT" \
-        --candidates_only \
-        >"$RUN_ROOT/logs/em_${iteration}_candidates_shard_${shard_index}.log" 2>&1 &
+        --candidates_only &
       SHARD_PIDS+=("$!")
+      SHARD_LOGS+=("$RUN_ROOT/logs/em_${iteration}_candidates_shard_${shard_index}_${PIPELINE_RUN_ID}.log")
     fi
   done
-  for pid in "${SHARD_PIDS[@]}"; do wait "$pid"; done
+  SHARD_FAILED=0
+  FIRST_FAILED_LOG=""
+  for index in "${!SHARD_PIDS[@]}"; do
+    if wait "${SHARD_PIDS[$index]}"; then :; else
+      [[ -n "$FIRST_FAILED_LOG" ]] || FIRST_FAILED_LOG=${SHARD_LOGS[$index]}
+      SHARD_FAILED=1
+      # 已经 wait 完的 PID 不再发送信号，仅终止尚未回收的本轮分片。
+      for ((pending=index+1; pending<${#SHARD_PIDS[@]}; pending++)); do
+        kill "${SHARD_PIDS[$pending]}" 2>/dev/null || true
+      done
+    fi
+  done
+  if [[ -n "$FIRST_FAILED_LOG" ]]; then CURRENT_STAGE_LOG=$FIRST_FAILED_LOG; fi
+  [[ "$SHARD_FAILED" == "0" ]]
 
   MERGE_ARGS=()
   for shard_index in "${!GPU_IDS[@]}"; do
@@ -303,12 +338,12 @@ for ((iteration=1; iteration<=EM_ITERATIONS; iteration++)); do
   done
   MERGED_CANDIDATES="$ITER_ROOT/candidates_merged.json"
   if [[ ! -s "$MERGED_CANDIDATES" ]]; then
-    "$PYTHON_BIN" -m geogr_full_pipeline.merge_em_candidates \
+    run_stage "em_${iteration}_merge" "$PYTHON_BIN" -u -m geogr_full_pipeline.merge_em_candidates \
       --input_sid_csv "$CURRENT_SID" "${MERGE_ARGS[@]}" --output_json "$MERGED_CANDIDATES"
   fi
   NEXT_SID="$RUN_ROOT/sid/em_iteration_${iteration}_sid.csv"
   if [[ ! -s "$NEXT_SID" ]]; then
-    "$PYTHON_BIN" -m geogr_full_pipeline.em_refine_sid \
+    run_stage "em_${iteration}_assign" env OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 "$PYTHON_BIN" -u -m geogr_full_pipeline.em_refine_sid \
       --poi_info "$POI_INFO" --role_priors "$ROLE_PRIORS" "${ID_MAPPING_ARGS[@]}" \
       --input_sid_csv "$CURRENT_SID" --base_model "$BASE_MODEL" \
       --adapter_dir "$EM_ADAPTER" --tokenizer_path "$EM_ADAPTER" \
@@ -326,35 +361,38 @@ if [[ ! -s "$FINAL_SID" ]]; then cp "$CURRENT_SID" "$FINAL_SID"; fi
 
 if [[ ! -s "$RUN_ROOT/data/llm_json_report.json" ]]; then
   if [[ "$DATA_MODE" == "spark" ]]; then
-    "$SPARK_SUBMIT_BIN" "${SPARK_ARGS[@]}" "$REPO_ROOT/tap_sid/build_llm_data_spark.py" \
+    run_stage build_llm_data_spark "$SPARK_SUBMIT_BIN" "${SPARK_ARGS[@]}" "$REPO_ROOT/tap_sid/build_llm_data_spark.py" \
       --sid_csv "$FINAL_SID" --sequence_root "$SEQUENCE_ROOT" \
       --output_dir "$RUN_ROOT/data" --shuffle_partitions "$SPARK_SHUFFLE_PARTITIONS" \
-      --output_partitions "$SPARK_OUTPUT_PARTITIONS" \
-      >"$RUN_ROOT/logs/build_llm_data_spark.log" 2>&1
+      --output_partitions "$SPARK_OUTPUT_PARTITIONS"
   else
-    "$PYTHON_BIN" -m tap_sid.build_llm_data --sid_csv "$FINAL_SID" \
+    run_stage build_llm_data "$PYTHON_BIN" -u -m tap_sid.build_llm_data --sid_csv "$FINAL_SID" \
       --split_dir "$SPLIT_DIR" --output_dir "$RUN_ROOT/data" \
       --keep_last_k_train "$KEEP_LAST_K_TRAIN" --no_validation
   fi
 fi
+json_ok "$RUN_ROOT/data/llm_json_report.json"
+[[ -e "$TRAIN_DATASET" && -e "$TEST_DATASET" ]]
 
 if [[ ! -s "$RUN_ROOT/cpt/cpt_data_report.json" ]]; then
-  "$PYTHON_BIN" -m geogr_full_pipeline.build_cpt_data \
+  run_stage build_cpt_data "$PYTHON_BIN" -u -m geogr_full_pipeline.build_cpt_data \
     --poi_info "$POI_INFO" --role_priors "$ROLE_PRIORS" "${ID_MAPPING_ARGS[@]}" \
     --train_sequences "$TRAIN_SEQUENCES" --sid_csv "$FINAL_SID" \
     --output_json "$RUN_ROOT/cpt/cpt_train.json" \
     --report_json "$RUN_ROOT/cpt/cpt_data_report.json"
 fi
+json_ok "$RUN_ROOT/cpt/cpt_train.json"
+json_ok "$RUN_ROOT/cpt/cpt_data_report.json"
 
 train_sft_variant() {
   local variant_root=$1 init_adapter=${2:-}
-  if [[ -s "$variant_root/checkpoint/final_sft/adapter_config.json" ]]; then return; fi
-  require_new_dir "$variant_root/checkpoint"
+  if checkpoint_ready "$variant_root/checkpoint" final_sft; then return; fi
+  prepare_checkpoint "$variant_root/checkpoint" final_sft
   local init_args=()
   if [[ -n "$init_adapter" ]]; then
     init_args=(--init_adapter_dir "$init_adapter" --tokenizer_path "$init_adapter")
   fi
-  CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON_BIN" -m torch.distributed.run \
+  run_stage "$(basename "$variant_root")_train" env CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON_BIN" -u -m torch.distributed.run \
     --standalone --nproc_per_node="$GPU_COUNT" -m geogr_full_pipeline.train_matched_sft \
     --base_model "$BASE_MODEL" "${init_args[@]}" --train_dataset "$TRAIN_DATASET" \
     --output_dir "$variant_root/checkpoint" --batch_size 1 --eval_batch_size 1 \
@@ -362,31 +400,41 @@ train_sft_variant() {
     --learning_rate "$LEARNING_RATE" --cutoff_len 2048 --lm_loss_weight 1.0 \
     --alpha_prefix 0.0 --head_dropout 0.1 --lora_r 16 --lora_alpha 32 \
     --lora_dropout 0.1 --gradient_checkpointing --seed "$SEED" \
-    --logging_steps 120 --attn_implementation sdpa \
-    >"$RUN_ROOT/logs/$(basename "$variant_root")_train.log" 2>&1
+    --logging_steps 120 --attn_implementation sdpa
+  checkpoint_ready "$variant_root/checkpoint" final_sft
 }
 
-if [[ ! -s "$RUN_ROOT/cpt/checkpoint/final_cpt/adapter_config.json" ]]; then
-  require_new_dir "$RUN_ROOT/cpt/checkpoint"
-  CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON_BIN" -m torch.distributed.run \
+if ! checkpoint_ready "$RUN_ROOT/cpt/checkpoint" final_cpt; then
+  prepare_checkpoint "$RUN_ROOT/cpt/checkpoint" final_cpt
+  run_stage cpt_train env CUDA_VISIBLE_DEVICES="$GPUS" "$PYTHON_BIN" -u -m torch.distributed.run \
     --standalone --nproc_per_node="$GPU_COUNT" -m geogr_full_pipeline.train_cpt \
     --base_model "$BASE_MODEL" --dataset "$RUN_ROOT/cpt/cpt_train.json" \
     --output_dir "$RUN_ROOT/cpt/checkpoint" --batch_size 1 \
     --grad_accum "$CPT_GRAD_ACCUM" --num_train_epochs "$CPT_EPOCHS" \
     --learning_rate "$LEARNING_RATE" --warmup_steps 20 --cutoff_len 512 \
-    --seed "$SEED" --logging_steps 120 >"$RUN_ROOT/logs/cpt_train.log" 2>&1
+    --seed "$SEED" --logging_steps 120
 fi
+checkpoint_ready "$RUN_ROOT/cpt/checkpoint" final_cpt
 CPT_SFT_ROOT="$RUN_ROOT/cpt_sft"
 train_sft_variant "$CPT_SFT_ROOT" "$RUN_ROOT/cpt/checkpoint/final_cpt"
 
 evaluate_variant() {
   local variant_root=$1 run_id=$2
-  if [[ -s "$variant_root/eval/test_metrics.json" ]]; then return; fi
-  PYTHON_BIN="$PYTHON_BIN" BASE_MODEL="$BASE_MODEL" RUN_ROOT="$variant_root" \
+  if [[ -s "$variant_root/eval/test_metrics.json" && -s "$variant_root/eval/test_predictions.json" ]]; then
+    json_ok "$variant_root/eval/test_predictions.json"
+    json_ok "$variant_root/eval/test_metrics.json"
+    return
+  fi
+  # 单边落盘的评估文件保留副本；分片目录使用新 ID，不覆盖旧尝试。
+  for partial in test_metrics.json test_predictions.json; do
+    if [[ -e "$variant_root/eval/$partial" ]]; then
+      cp -n "$variant_root/eval/$partial" "$variant_root/eval/${partial}.incomplete_${PIPELINE_RUN_ID}"
+    fi
+  done
+  run_stage "$(basename "$variant_root")_eval" env PYTHON_BIN="$PYTHON_BIN" BASE_MODEL="$BASE_MODEL" RUN_ROOT="$variant_root" \
     SEMANTIC_CODES="$FINAL_SID" TEST_DATASET="$TEST_DATASET" EVAL_GPUS="$GPUS" \
-    EVAL_RUN_ID="$run_id" EVAL_NUM_BEAMS="$TEST_BEAMS" EVAL_K=10 EVAL_SEED="$SEED" \
-    CUDA_VISIBLE_DEVICES="$GPUS" bash scripts/evaluate.sh \
-    >"$RUN_ROOT/logs/$(basename "$variant_root")_eval.log" 2>&1
+    EVAL_RUN_ID="${run_id}_${PIPELINE_RUN_ID}" EVAL_NUM_BEAMS="$TEST_BEAMS" EVAL_K=10 EVAL_SEED="$SEED" \
+    CUDA_VISIBLE_DEVICES="$GPUS" bash scripts/evaluate.sh
   json_ok "$variant_root/eval/test_predictions.json"
   json_ok "$variant_root/eval/test_metrics.json"
 }

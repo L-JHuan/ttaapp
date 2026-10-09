@@ -61,6 +61,7 @@ class InitialRqRuntimeTest(unittest.TestCase):
             'timestamp() { date; }\nlog() { printf "%s\\n" "$*"; }\n'
             'json_ok() { "$REAL_PYTHON" -m json.tool "$1" >/dev/null; }\n'
             'require_new_dir() { return 99; }\n'
+            + 'PIPELINE_RUN_ID=test\nsource ' + repr(str(runner.parent / "pipeline_runtime.sh")) + '\n'
             + error_handler + '\nP2P_ROOT="$RUN_ROOT/p2p"\n'
             + stage + '\n"$PYTHON_BIN" --probe_after\n'
         )

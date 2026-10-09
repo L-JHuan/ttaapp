@@ -34,6 +34,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     pids, embeddings = load_embeddings(args.embeddings_npz)
+    print(f"Initial RQ: POIs={len(pids)} dimensions={embeddings.shape[1]} codebook={args.codebook_size} layers=3 n_init=20", flush=True)
     codes, _, quantization = residual_kmeans(
         embeddings,
         codebook_size=args.codebook_size,
@@ -58,6 +59,7 @@ def main() -> None:
             "output_csv": str(args.output_csv),
         },
     )
+    print(f"GEOGR_FULL_INITIAL_RQ_OK: SID={args.output_csv} report={args.report_json}", flush=True)
 
 
 if __name__ == "__main__":
