@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import math
 import os
@@ -23,6 +24,7 @@ from transformers import (
 )
 from geogr_full_pipeline.peft_compat import configure_ddp_peft_save
 from geogr_full_pipeline.ddp_diagnostics import logged_ddp
+from geogr_full_pipeline.numerical_safety import guard_training
 
 
 class CptDataset(Dataset):
@@ -150,6 +152,7 @@ def main() -> None:
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     device, rank, world_size, distributed = setup_distributed()
+    guards = ExitStack()
     try:
         tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
         if tokenizer.pad_token is None:
@@ -224,7 +227,10 @@ def main() -> None:
         global_step = 0
         epoch_losses: list[float] = []
         optimizer.zero_grad(set_to_none=True)
+        safety = guards.enter_context(guard_training(model, optimizer, device, epoch=0, global_step=0))
         for epoch in range(1, args.num_train_epochs + 1):
+            safety.epoch = epoch
+            safety.micro_step = 0
             if sampler is not None:
                 sampler.set_epoch(epoch)
             model.train()
@@ -291,6 +297,7 @@ def main() -> None:
         if distributed:
             torch.distributed.barrier()
     finally:
+        guards.close()
         if distributed and torch.distributed.is_initialized():
             torch.distributed.destroy_process_group()
 

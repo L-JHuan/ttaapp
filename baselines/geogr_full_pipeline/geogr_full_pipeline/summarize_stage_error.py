@@ -13,6 +13,7 @@ def summarize(path):
     tail = deque(maxlen=25)
     pattern = re.compile(
         r"NCCL (?:WARN|ERROR)|Hggc failure|CUDA out of memory|"
+        r"GEOGR_NONFINITE|NonFiniteTrainingError:|ALINPU ERROR|ESR kill failed|HW under unreliable state|"
         r"(?:DistBackendError|RuntimeError|OutOfMemoryError|ValueError|AttributeError|ImportError|TypeError|FileNotFoundError):"
     )
     with Path(path).open(encoding="utf-8", errors="replace") as handle:

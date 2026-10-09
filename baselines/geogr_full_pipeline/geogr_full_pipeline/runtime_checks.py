@@ -2,7 +2,19 @@
 
 import argparse
 import json
+import math
 from pathlib import Path
+
+
+def finite_summary(value):
+    """旧版可能把 NaN 写入成功总结；这样的训练结果不得跳过重训。"""
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, dict):
+        return all(finite_summary(item) for item in value.values())
+    if isinstance(value, list):
+        return all(finite_summary(item) for item in value)
+    return True
 
 
 def checkpoint_ready(checkpoint: Path, final_name: str) -> bool:
@@ -10,7 +22,7 @@ def checkpoint_ready(checkpoint: Path, final_name: str) -> bool:
     try:
         config = json.loads((adapter / "adapter_config.json").read_text())
         summary = json.loads((checkpoint / "training_summary.json").read_text())
-        return isinstance(config, dict) and bool(config) and isinstance(summary, dict) and int(summary.get("global_step", 0)) > 0 and any(
+        return isinstance(config, dict) and bool(config) and isinstance(summary, dict) and finite_summary(summary) and int(summary.get("global_step", 0)) > 0 and any(
             path.is_file() and path.stat().st_size > 0
             for path in (adapter / "adapter_model.bin", adapter / "adapter_model.safetensors")
         ) and (adapter / "tokenizer_config.json").is_file()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from geogr_full_pipeline.peft_compat import configure_ddp_peft_save
 from geogr_full_pipeline.ddp_diagnostics import logged_ddp
+from geogr_full_pipeline.numerical_safety import install_training_guard
 from torch.distributed.elastic.multiprocessing.errors import record
 
 
@@ -14,6 +15,7 @@ def main() -> None:
 
     # 只替换本隔离进程的 DDP 构造入口，公共 TAP 代码及构造参数不变。
     trainer.DistributedDataParallel = logged_ddp
+    install_training_guard(trainer)
     trainer.main()
 
 
